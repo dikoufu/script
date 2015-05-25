@@ -1,0 +1,1575 @@
+#!/bin/sh
+#
+# install - install jdk, OTPAuthService, OTPWebService, OTP Center, OTP Portal
+# these servers' configure files, these servers' scripts
+#
+
+#
+# Check the bit of OS which is right with the install package.
+#
+check_package()
+{
+    if [ -f VERSION ]
+    then
+        OS_BIT=` getconf LONG_BIT `
+        grep "otpserver-linux${OS_BIT}-v4.0" VERSION >/dev/null
+        if [ $? -ne 0  ]
+        then
+            echo "The OS is $OS_BIT, please change package."
+            exit 1
+        fi
+    fi
+}
+
+#
+# Check read command option -e, ubuntu not support.
+#
+check_read_e()
+{
+    ` echo "input" | read -e 2>/dev/null `
+    if [ $? -eq 0 ]
+    then
+        READ_E=-e
+    fi
+}
+
+#
+# Set OTP Server install path, please do NOT modify these variables!
+#
+set_path()
+{
+    DEFAULT_PATH=/home/ftotp/otpserver
+
+    echo -n  "Please input the install path ["$DEFAULT_PATH"]: " 
+    read $READ_E BASE_PATH
+    if [ x"$BASE_PATH" = x ]
+    then
+        BASE_PATH="$DEFAULT_PATH"
+    fi
+    if [ x"$BASE_PATH" = x"$DEFAULT_PATH" ]
+    then
+        USE_DEFAULT_PATH=1
+    else
+        USE_DEFAULT_PATH=0
+    fi
+
+    #check BASE PATH
+    if [ -d $BASE_PATH ]
+    then
+        if [ x"`ls -A $BASE_PATH`" != x ]
+        then
+            echo "$BASE_PATH is not empty,please delete the files!"
+            exit 1
+        fi
+        rm -rf $BASE_PATH
+        if [ $? -ne 0 ]
+        then
+            echo "Remove empty directory &BASE_PATH failed, please check the previlegs!"
+            exit 1
+        fi
+    fi
+    # clean up old files
+    #rm -rf $BASE_PATH
+    mkdir -p $BASE_PATH 2>/dev/null
+    if [ $? -ne 0 ]
+    then
+        echo "Create directory $BASE_PATH failed, please check the previlegs!"
+        exit 1
+    fi
+    chown -R $OWNER_USER:$OWNER_GROUP $BASE_PATH
+
+    MYSQL_DIR=mysql
+    JDK_DIR=jdk
+    AUTHSERVER_DIR=otpauthservice
+    WEBSERVER_DIR=otpwebservice
+    TOMCAT_DIR=tomcat
+    OTPCENTER_DIR=otpcenter
+    OTPPORTAL_DIR=otpportal
+
+    OTPMYSQL_PATH="$BASE_PATH/$MYSQL_DIR"
+    JDK_PATH="$BASE_PATH/$JDK_DIR"
+    OTPSERVER_PATH="$BASE_PATH/$AUTHSERVER_DIR"
+    OTPTOMCAT_PATH="$BASE_PATH/$WEBSERVER_DIR"
+    OTPCENTER_PATH="$OTPTOMCAT_PATH/$TOMCAT_DIR/webapps/$OTPCENTER_DIR"
+    OTPPORTAL_PATH="$OTPTOMCAT_PATH/$TOMCAT_DIR/webapps/$OTPPORTAL_DIR"
+
+    INIT_PATH="/etc/init.d"
+    OTPMYSQL_SCRIPT=otpmysql
+    OTPSERVER_SCRIPT=otpauthservice
+    OTPTOMCAT_SCRIPT=otpwebservice
+
+    OTPCHCKCONTROL_SCRIPT=otpserver
+    CHECKSERVICES_SCRIPT=otpserverd
+    OTPCHCKCONTROL_PATH="$BASE_PATH"
+
+    UNINSTALL_SCRIPT=uninstall
+    UNSTALL_PATH="$BASE_PATH"
+
+    echo "" 
+}
+
+#
+# Check for root
+#
+check_user()
+{
+    if [ x"$EUID" = x ]
+    then
+        if [ ! `id -u` = 0 ]
+        then
+            #echo "You need to run this script as root!"
+            return 0
+            exit 1
+        fi
+    else
+        if [ ! $EUID = 0 ]
+        then
+            #echo "You need to run this script as root!"
+            return 0
+            exit 1
+        fi
+    fi
+
+    return 1
+}
+
+# This function is not used in standard product install script.
+# deal params for user and group 
+#
+deal_params_user_group()
+{
+    while [ x"$1" != x ]; do
+        if [ x"$2" = x ]
+        then
+            if [ x"$4" = x ]
+            then 
+                echo "Your parameter is not right.usage: ./install -o username -g group!"
+                exit 1;
+            fi
+        fi
+
+        case $1 in
+        -o) if [ x"$OWNER_ARG" = x ]
+                then
+                OWNER_ARG="-o $2"
+            else
+                OWNER_ARG="$OWNER_ARG -o $2"
+            fi
+            OWNER_USER=$2
+            shift
+            shift
+            continue
+            ;;
+
+        -g) if [ x"$OWNER_ARG" = x ]
+            then
+                OWNER_ARG="-g $2"
+            else
+                OWNER_ARG="$OWNER_ARG -g $2"
+            fi
+            OWNER_GROUP=$2
+            shift
+            shift
+            continue
+            ;;
+        *)
+            echo "Your parameter is not right.usage: ./install -o username -g group!"
+            exit 1
+            ;;
+        esac
+    done
+}
+
+#
+# deal parameter
+#
+deal_params()
+{
+    OWNER_USER=
+    OWNER_GROUP=
+    OWNER_ARG=
+
+    #deal_params_user_group $*
+
+    # is root 
+    check_user
+    IS_ROOT=$?
+
+    USER="ftotp"
+    GROUP="ftotp"
+    if [ x"$OWNER_ARG" = x -o x"$OWNER_USER" = x -o x"$OWNER_GROUP" = x ]
+    then
+        if [ $IS_ROOT -eq 0 ]
+        then
+            OWNER_USER=` whoami `
+            if [ x"$OWNER_USER" = x ]
+            then
+                echo "Sorry. Get user' name failed!"
+                exit 1
+            fi
+            OWNER_GROUP=` groups | awk -F ' ' '{print $1'} `
+            if [ x"$OWNER_GROUP" = x ]
+            then
+                echo "Sorry. Get user's group failed."
+                exit 1
+            fi
+        else
+            while true
+            do
+                echo -n   "Please input runner user's name ["$USER"]: " 
+                read $READ_E OWNER_USER
+                if [ x"$OWNER_USER" = x ]
+                then
+                    OWNER_USER=$USER
+                fi
+                if [ x"$OWNER_USER" = x"root" ]
+                then
+                    echo "The runner user can not be root! Please input again."
+                    continue
+                fi
+                break
+            done
+            while true
+            do
+                # user' name as default group
+                echo -n   "Please input runner user's group ["$OWNER_USER"]: " 
+                read $READ_E OWNER_GROUP
+                if [ x"$OWNER_GROUP" = x ]
+                then
+                    OWNER_GROUP=$OWNER_USER
+                fi
+                if [ x"$OWNER_GROUP" = x"root" ]
+                then
+                    echo "The group can not be root! Please input again."
+                    continue
+                fi
+                # check user is in group or not
+                if [ x"`id $OWNER_USER 2>/dev/null`" != x ]
+                then
+                    # user exist, get user's groups, search ' group'
+                    GROUPS_RESULT=` groups $OWNER_USER `
+                    # 'groups user' result is 'user : group1 group2 ...'
+                    if [ x"` echo $GROUPS_RESULT | grep " $OWNER_GROUP" `" != x ]
+                    then
+                        break
+                    fi
+                    # debian32 result is 'group1 group2 ...', search ':'
+                    if [ x"` echo $GROUPS_RESULT | grep ":" `" = x ]
+                    then
+                        # firstly, search ' '
+                        if [ x"` echo $GROUPS_RESULT | grep " " `" = x ]
+                        then
+                            # only one group or no, search 'group'
+                            if [ x"` echo $GROUPS_RESULT | grep "$OWNER_GROUP" `" != x ]
+                            then
+                                break
+                            fi
+                        else
+                            # some groups, search 'group '
+                            if [ x"` echo $GROUPS_RESULT | grep "$OWNER_GROUP " `" != x ]
+                            then
+                                break
+                            fi
+                        fi
+                    fi
+                    # user not in group which input
+                    echo "The user $OWNER_USER is not in group $OWNER_GROUP! Please input again."
+                    continue
+                fi
+                # user not exist, it will be created
+                break
+            done
+            echo ""
+        fi
+        OWNER_ARG="-o $OWNER_USER -g $OWNER_GROUP"
+    fi
+}
+
+#
+# Check for terms of the license
+#
+check_license()
+{
+    echo "Copyright (C) 2007-2013 Feitian Technologies Co., Ltd."
+    echo ""
+    echo "Welcome to the OTP Server v4.0.0 installer"
+    echo ""
+    echo "Have you read and do you agree to all the terms of the license"
+    echo -n  "included with this package? (Y/N) [N]: " 
+    read $READ_E resp
+
+    resp=`echo "x$resp" | tr '[A-Z]' '[a-z]'`
+    if [ $resp != "xy" ]
+    then
+        echo "We can not continue unless you agree to the license and answer yes[Y]!"
+        exit 1
+    fi
+
+    echo ""
+}
+
+#
+# Check memory 1024M
+#
+check_memory()
+{
+#    FREE_MEM=` free -m | grep -i "Mem" | awk '{print $4}' `
+     str=`top -l 1 | awk '/PhysMem/'| awk '{print $6}'`;
+     FREE_MEM=${str%M*}
+    if [ $FREE_MEM -lt 1024 ]
+    then
+        echo "The free memory( $FREE_MEM M) is not enough! Memory should be at least 1G."
+        echo -n  "Will you continue? (Y/N) [N]: " 
+        read $READ_E resp
+        resp=`echo "x$resp" | tr '[A-Z]' '[a-z]'`
+        if [ $resp != "xy" ]
+        then
+            echo "We can not continue unless you answer yes[Y]!"
+            exit 1
+        fi
+    fi
+}
+
+#
+# create user and groups if not exists
+#
+create_user_group()
+{
+    #groups [OPTION]... [USERNAME]...
+    if [ $IS_ROOT -eq 0 ]
+    then
+        return
+        grep -q $OWNER_USER /etc/passwd
+        if [ $? -ne 0 ]
+        then
+            echo "Please create user '$OWNER_USER'."
+            exit 1
+        fi
+        grep -q $OWNER_GROUP /etc/group
+        if [ $? -ne 0 ]
+        then
+            echo "Please create group '$OWNER_GROUP'."
+            exit 1
+        fi
+    else
+        /usr/sbin/groupadd $OWNER_GROUP 2>/dev/null
+        if [ $? -ne 0 -a $? -ne 9 ]
+        then
+            echo "Add group $OWNER_GROUP failed!Please check!"
+            exit 1
+        fi
+
+        if [ x"`id $OWNER_USER 2>/dev/null`" = x ]
+        then
+            /usr/sbin/useradd $OWNER_USER -g $OWNER_GROUP 2>/dev/null
+            if [ $? -ne 0 ]
+            then
+                echo "Add user $OWNER_USER failed!Please check!"
+                exit 1
+            fi
+            echo "$OWNER_USER:$OWNER_USER" | chpasswd >/dev/null 2>&1
+        fi
+    fi
+}
+
+#
+# get user selects
+#
+get_install()
+{
+    echo "The OTP Server v4.0.0 contains OTPAuthService, OTPCenter, OTPPortal and MySQL."
+
+    INSTALL_JDK=0
+    INSTALL_OTPCENTER=0
+    INSTALL_OTPPORTAL=0
+    INSTALL_MYSQL=0
+    INSTALL_TOMCAT=0
+    INSTALL_OTPSERVER=0
+    INSTALL_OTPCHCKCONTROL=0
+
+    echo -n  "Will you install OTPAuthService? (Y/N) [Y]: " 
+    read $READ_E resp
+    resp=`echo "x$resp" | tr '[A-Z]' '[a-z]'`
+    if [ $resp != "xn" ]
+    then
+        INSTALL_JDK=1
+        INSTALL_OTPSERVER=1
+    fi
+
+    echo -n  "Will you install OTPCenter? (Y/N) [Y]: " 
+    read $READ_E resp
+    resp=`echo "x$resp" | tr '[A-Z]' '[a-z]'`
+    if [ $resp != "xn" ]
+    then
+        INSTALL_JDK=1
+        INSTALL_TOMCAT=1
+        INSTALL_OTPCENTER=1
+    fi
+
+    echo -n  "Will you install OTPPortal? (Y/N) [Y]: " 
+    read $READ_E resp
+    resp=`echo "x$resp" | tr '[A-Z]' '[a-z]'`
+    if [ $resp != "xn" ]
+    then
+        INSTALL_JDK=1
+        INSTALL_TOMCAT=1
+        INSTALL_OTPPORTAL=1
+    fi
+
+    echo -n  "Will you install MySQL? (Y/N) [Y]: " 
+    read $READ_E resp
+    resp=`echo "x$resp" | tr '[A-Z]' '[a-z]'`
+    if [ $resp != "xn" ]
+    then
+        INSTALL_MYSQL=1
+    fi
+
+    if [ $INSTALL_MYSQL -eq 1 -o $INSTALL_OTPSERVER -eq 1 -o $INSTALL_TOMCAT -eq 1 ]
+    then
+        INSTALL_OTPCHCKCONTROL=1
+    fi
+
+    echo ""
+}
+
+#
+# install OTP Server files
+#
+copy_otpserver_files()
+{
+    echo "Installing OTP Server files..."
+    # install MYSQL_DIR
+    if [ $INSTALL_MYSQL -eq 1 ]
+    then
+        mv $MYSQL_DIR $OTPMYSQL_PATH
+        chown -R $OWNER_USER:$OWNER_GROUP $OTPMYSQL_PATH
+    fi
+
+    # install JDK_DIR
+    if [ $INSTALL_JDK -eq 1 ]
+    then
+        mv $JDK_DIR $JDK_PATH
+        chown -R $OWNER_USER:$OWNER_GROUP $JDK_PATH
+    fi
+
+    # install AUTHSERVER_DIR
+    if [ $INSTALL_OTPSERVER -eq 1 ]
+    then
+        mv $AUTHSERVER_DIR $OTPSERVER_PATH
+        chown -R $OWNER_USER:$OWNER_GROUP $OTPSERVER_PATH
+    fi
+
+    # install WEBSERVER_DIR
+    if [ $INSTALL_TOMCAT -eq 1 ]
+    then
+        mv $WEBSERVER_DIR $OTPTOMCAT_PATH
+        chown -R $OWNER_USER:$OWNER_GROUP $OTPTOMCAT_PATH
+    fi
+
+    # install OTPCENTER_DIR
+    if [ $INSTALL_OTPCENTER -eq 1 ]
+    then
+        mv $OTPCENTER_DIR $OTPCENTER_PATH
+        chown -R $OWNER_USER:$OWNER_GROUP $OTPCENTER_PATH
+    fi
+
+    # install OTPPORTAL_DIR
+    if [ $INSTALL_OTPPORTAL -eq 1 ]
+    then
+        mv $OTPPORTAL_DIR $OTPPORTAL_PATH
+        chown -R $OWNER_USER:$OWNER_GROUP $OTPPORTAL_PATH
+    fi
+
+    if [ $INSTALL_OTPCHCKCONTROL -eq 1 ]
+    then
+        mv $OTPCHCKCONTROL_SCRIPT $OTPCHCKCONTROL_PATH/$OTPCHCKCONTROL_SCRIPT
+        chown -R $OWNER_USER:$OWNER_GROUP $OTPCHCKCONTROL_PATH/$OTPCHCKCONTROL_SCRIPT
+        mv $CHECKSERVICES_SCRIPT $OTPCHCKCONTROL_PATH/$CHECKSERVICES_SCRIPT
+        chown -R $OWNER_USER:$OWNER_GROUP $OTPCHCKCONTROL_PATH/$CHECKSERVICES_SCRIPT
+    fi
+
+    # copy unstall scripts
+    cp $UNINSTALL_SCRIPT $UNSTALL_PATH/$UNINSTALL_SCRIPT
+    chown -R $OWNER_USER:$OWNER_GROUP $UNSTALL_PATH/$UNINSTALL_SCRIPT
+
+    echo "[OK]"
+    echo ""
+}
+
+#
+# modify the script of services, about LSB
+#
+modify_scripts_lsb()
+{
+    # otpmysql delete from otpauthservice & otpwebservice in the part of 'LSB init script'
+    if [ $INSTALL_MYSQL -eq 0 ]
+    then
+        # otpauthservice
+        if [ $INSTALL_TOMCAT -eq 1 ]
+        then
+            sed -i 's@# Required-Start: $network $syslog otpmysql@# Required-Start: $network $syslog@g' "$OTPTOMCAT_PATH/$OTPTOMCAT_SCRIPT"
+            if [ $? -ne 0 ]
+            then
+                echo "Please delete otpmysql in $OTPTOMCAT_PATH/$OTPTOMCAT_SCRIPT "
+            fi
+            sed -i 's@# Required-Stop: $network $syslog otpmysql@# Required-Stop: $network $syslog@g' "$OTPTOMCAT_PATH/$OTPTOMCAT_SCRIPT"
+            if [ $? -ne 0 ]
+            then
+                echo "Please delete otpmysql in $OTPTOMCAT_PATH/$OTPTOMCAT_SCRIPT "
+            fi
+        fi
+        # otpwebservice
+        if [ $INSTALL_OTPSERVER -eq 1 ]
+        then
+            sed -i 's@# Required-Start: $local_fs $network $remote_fs otpmysql@# Required-Start: $local_fs $network $remote_fs@g' "$OTPSERVER_PATH/$OTPSERVER_SCRIPT"
+            if [ $? -ne 0 ]
+            then
+                echo "Please delete otpmysql in $OTPSERVER_PATH/$OTPSERVER_SCRIPT "
+            fi
+            sed -i 's@# Required-Stop: $local_fs $network $remote_fs otpmysql@# Required-Stop: $local_fs $network $remote_fs@g' "$OTPSERVER_PATH/$OTPSERVER_SCRIPT"
+            if [ $? -ne 0 ]
+            then
+                echo "Please delete otpmysql in $OTPSERVER_PATH/$OTPSERVER_SCRIPT "
+            fi
+        fi
+    fi
+
+    OS_NAME=` lsb_release -i -s 2>/dev/null `
+    case $OS_NAME in
+    *RedHatEnterpriseAS*)   # redhat4 delete $network in the part of 'LSB init script'
+        OS_RELEASE=` lsb_release -r -s 2>/dev/null `
+        if [ $OS_RELEASE -eq 4 ]
+        then
+            # otpmysql
+            if [ $INSTALL_MYSQL -eq 1 ]
+            then
+                sed -i 's@# Required-Start: $local_fs $network $remote_fs@# Required-Start: $local_fs $remote_fs@g' "$OTPMYSQL_PATH/$OTPMYSQL_SCRIPT"
+                if [ $? -ne 0 ]
+                then
+                    echo "Please delete '$'network in $OTPMYSQL_PATH/$OTPMYSQL_SCRIPT "
+                fi
+                sed -i 's@# Required-Stop: $local_fs $network $remote_fs@# Required-Stop: $local_fs $remote_fs@g' "$OTPMYSQL_PATH/$OTPMYSQL_SCRIPT"
+                if [ $? -ne 0 ]
+                then
+                    echo "Please delete '$'network in $OTPMYSQL_PATH/$OTPMYSQL_SCRIPT "
+                fi
+            fi
+            # otpauthservice
+            if [ $INSTALL_TOMCAT -eq 1 ]
+            then
+                sed -i 's@# Required-Start: $network $syslog@# Required-Start: $syslog@g' "$OTPTOMCAT_PATH/$OTPTOMCAT_SCRIPT"
+                if [ $? -ne 0 ]
+                then
+                    echo "Please delete '$'network in $OTPTOMCAT_PATH/$OTPTOMCAT_SCRIPT "
+                fi
+                sed -i 's@# Required-Stop: $network $syslog@# Required-Stop: $syslog@g' "$OTPTOMCAT_PATH/$OTPTOMCAT_SCRIPT"
+                if [ $? -ne 0 ]
+                then
+                    echo "Please delete '$'network in $OTPTOMCAT_PATH/$OTPTOMCAT_SCRIPT "
+                fi
+            fi
+            # otpwebservice
+            if [ $INSTALL_OTPSERVER -eq 1 ]
+            then
+                sed -i 's@# Required-Start: $local_fs $network $remote_fs@# Required-Start: $local_fs $remote_fs@g' "$OTPSERVER_PATH/$OTPSERVER_SCRIPT"
+                if [ $? -ne 0 ]
+                then
+                    echo "Please delete '$'network in $OTPSERVER_PATH/$OTPSERVER_SCRIPT "
+                fi
+                sed -i 's@# Required-Stop: $local_fs $network $remote_fs@# Required-Stop: $local_fs $remote_fs@g' "$OTPSERVER_PATH/$OTPSERVER_SCRIPT"
+                if [ $? -ne 0 ]
+                then
+                    echo "Please delete '$'network in $OTPSERVER_PATH/$OTPSERVER_SCRIPT "
+                fi
+            fi
+            # INSTALL_OTPCHCKCONTROL
+            if [ $INSTALL_OTPCHCKCONTROL -eq 1 ]
+            then
+                sed -i 's@# Required-Start: $local_fs $network $remote_fs@# Required-Start: $local_fs $remote_fs@g' "$OTPCHCKCONTROL_PATH/$OTPCHCKCONTROL_SCRIPT"
+                if [ $? -ne 0 ]
+                then
+                    echo "Please delete '$'network in $OTPCHCKCONTROL_PATH/$OTPCHCKCONTROL_SCRIPT "
+                fi
+                sed -i 's@# Required-Stop: $local_fs $network $remote_fs@# Required-Stop: $local_fs $remote_fs@g' "$OTPCHCKCONTROL_PATH/$OTPCHCKCONTROL_SCRIPT"
+                if [ $? -ne 0 ]
+                then
+                    echo "Please delete '$'network in $OTPCHCKCONTROL_PATH/$OTPCHCKCONTROL_SCRIPT "
+                fi
+            fi
+        fi
+        ;;
+    esac
+}
+
+#
+# modify the script of services, about shell
+#
+modify_scripts_sh()
+{
+    OS_NAME=` lsb_release -i -s 2>/dev/null `
+    case $OS_NAME in
+    *Ubuntu*)               # Ubuntu need modify shell type in the otpmysql
+        if [ $INSTALL_MYSQL -eq 1 ]
+        then
+            sed -i '1s@/bin/sh@/bin/bash@' "$OTPMYSQL_PATH/$OTPMYSQL_SCRIPT"
+            if [ $? -ne 0 ]
+            then
+                echo "If $OTPMYSQL_SCRIPT can't run, please change the first line to '#!/bin/bash' in $OTPMYSQL_PATH/$OTPMYSQL_SCRIPT "
+            fi
+        fi
+        ;;
+    esac
+}
+
+#
+# modify the script of services, about user and install path
+#
+modify_scripts_app()
+{
+    # OTPMYSQL_SCRIPT user
+    if [ $INSTALL_MYSQL -eq 1 ]
+    then
+        sed -i "s@user=ftotp@user=${OWNER_USER}@g" "$OTPMYSQL_PATH/$OTPMYSQL_SCRIPT"
+        if [ $? -ne 0 ]
+        then
+            echo "If $OTPMYSQL_SCRIPT can't run, please modify the install 'user=ftotp' in $OTPMYSQL_PATH/$OTPMYSQL_SCRIPT "
+        fi
+        sed -i "s@user=ftotp@user=${OWNER_USER}@g" "$OTPMYSQL_PATH/bin/mysqld_safe"
+        if [ $? -ne 0 ]
+        then
+            echo "If $OTPMYSQL_SCRIPT can't run, please modify the install 'user=ftotp' in $OTPMYSQL_PATH/bin/mysqld_safe "
+        fi
+    fi
+    # OTPSERVER_SCRIPT user
+    if [ $INSTALL_OTPSERVER -eq 1 ]
+    then
+        sed -i "s@RUNNING_USER=ftotp@RUNNING_USER=${OWNER_USER}@g" "$OTPSERVER_PATH/$OTPSERVER_SCRIPT"
+        if [ $? -ne 0 ]
+        then
+            echo "Please modify the RUNNING_USER to $OWNER_USER in $OTPSERVER_PATH/$OTPSERVER_SCRIPT!!!"
+        fi
+    fi
+    # OTPTOMCAT_SCRIPT user
+    if [ $INSTALL_TOMCAT -eq 1 ]
+    then
+        sed -i "s@RUNNING_USER=ftotp@RUNNING_USER=${OWNER_USER}@g" "$OTPTOMCAT_PATH/$OTPTOMCAT_SCRIPT"
+        if [ $? -ne 0 ]
+        then
+            echo "Please modify the RUNNING_USER to $OWNER_USER in $OTPTOMCAT_PATH/$OTPTOMCAT_SCRIPT!!!"
+        fi
+    fi
+    # OTPCHCKCONTROL_SCRIPT user
+    if [ $INSTALL_OTPCHCKCONTROL -eq 1 ]
+    then
+        sed -i "s@RUNNING_USER=ftotp@RUNNING_USER=${OWNER_USER}@g" "$OTPCHCKCONTROL_PATH/$OTPCHCKCONTROL_SCRIPT"
+        if [ $? -ne 0 ]
+        then
+            echo "Please modify the RUNNING_USER to $OWNER_USER in $OTPCHCKCONTROL_PATH/$OTPCHCKCONTROL_SCRIPT!!!"
+        fi
+    fi
+
+    # use default path, do not modify
+    if [ $USE_DEFAULT_PATH -eq 1 ]
+    then
+        return 0
+    fi
+    # OTPMYSQL_SCRIPT BASE_PATH
+    if [ $INSTALL_MYSQL -eq 1 ]
+    then
+        sed -i "s@${DEFAULT_PATH}@${BASE_PATH}@g" "$OTPMYSQL_PATH/my.cnf"
+        if [ $? -ne 0 ]
+        then
+            echo "If $OTPMYSQL_SCRIPT can't run, please modify the install path in $OTPMYSQL_PATH/my.cnf "
+        fi
+        sed -i "s@${DEFAULT_PATH}@${BASE_PATH}@g" "$OTPMYSQL_PATH/$OTPMYSQL_SCRIPT"
+        if [ $? -ne 0 ]
+        then
+            echo "If $OTPMYSQL_SCRIPT can't run, please modify the 'basedir' in $OTPMYSQL_PATH/$OTPMYSQL_SCRIPT "
+        fi
+    fi
+    # OTPSERVER_SCRIPT BASE_PATH
+    if [ $INSTALL_OTPSERVER -eq 1 ]
+    then
+        sed -i "s@${DEFAULT_PATH}@${BASE_PATH}@g" "$OTPSERVER_PATH/$OTPSERVER_SCRIPT"
+        if [ $? -ne 0 ]
+        then
+            echo "If $OTPSERVER_SCRIPT can't run, please modify the 'APP_HOME' in $OTPSERVER_PATH/$OTPSERVER_SCRIPT "
+        fi
+        sed -i "s@${DEFAULT_PATH}@${BASE_PATH}@g" "$OTPSERVER_PATH/bin/start.sh"
+        if [ $? -ne 0 ]
+        then
+            echo "If $OTPSERVER_SCRIPT can't run with $OTPSERVER_PATH/bin/start.sh, please modify the 'APP_HOME' in this script "
+        fi
+    fi
+    # OTPTOMCAT_SCRIPT BASE_PATH
+    if [ $INSTALL_TOMCAT -eq 1 ]
+    then
+        sed -i "s@${DEFAULT_PATH}@${BASE_PATH}@g" "$OTPTOMCAT_PATH/$OTPTOMCAT_SCRIPT"
+        if [ $? -ne 0 ]
+        then
+            echo "If $OTPTOMCAT_SCRIPT can't run, please modify the first line 'APP_HOME' in $OTPTOMCAT_PATH/$OTPTOMCAT_SCRIPT "
+        fi
+    fi
+    # OTPCHCKCONTROL_SCRIPT BASE_PATH
+    if [ $INSTALL_OTPCHCKCONTROL -eq 1 ]
+    then
+        sed -i "s@${DEFAULT_PATH}@${BASE_PATH}@g" "$OTPCHCKCONTROL_PATH/$OTPCHCKCONTROL_SCRIPT"
+        if [ $? -ne 0 ]
+        then
+            echo "If $OTPCHCKCONTROL_SCRIPT can't run, please modify the first line 'APP_HOME' in $OTPCHCKCONTROL_PATH/$OTPCHCKCONTROL_SCRIPT "
+        fi
+        sed -i "s@${DEFAULT_PATH}@${BASE_PATH}@g" "$OTPCHCKCONTROL_PATH/$CHECKSERVICES_SCRIPT"
+        if [ $? -ne 0 ]
+        then
+            echo "If $CHECKSERVICES_SCRIPT can't run, please modify the first line 'APP_HOME' in $OTPCHCKCONTROL_PATH/$CHECKSERVICES_SCRIPT "
+        fi
+    fi
+    # UNINSTALL_SCRIPT scripts BASE_PATH
+    sed -i "s@${DEFAULT_PATH}@${BASE_PATH}@g" "$UNSTALL_PATH/$UNINSTALL_SCRIPT"
+
+    return 0
+}
+
+#
+# modify the script of services 
+#
+modify_scripts()
+{
+    modify_scripts_sh
+
+    modify_scripts_lsb
+
+    modify_scripts_app
+}
+
+#
+# get add services command of OS
+#
+get_service_cmd()
+{
+    CHKCONFIG="/sbin/insserv"
+    DO_FORCE=-f
+    DEL_PARAM=--remove
+    ADD_PARAM=--default
+    if [ ! -x "$CHKCONFIG" ]
+    then
+        CHKCONFIG="/usr/lib/insserv/insserv"    #Ubuntu12.4_64-Bug
+        if [ ! -x "$CHKCONFIG" ]
+        then
+            CHKCONFIG=` whereis insserv 2>/dev/null | awk '{print $2}' 2>/dev/null `
+            if [ x"$CHKCONFIG" != x ]
+            then
+                return 3
+            fi
+        else
+            return 3
+        fi
+    else
+        return 3
+    fi
+
+    CHKCONFIG="/usr/sbin/update-rc.d"
+    DO_FORCE=-f
+    DEL_PARAM=remove
+    ADD_PARAM=defaults
+    if [ ! -x "$CHKCONFIG" ]
+    then
+        CHKCONFIG=` whereis update-rc.d 2>/dev/null | awk '{print $2}' 2>/dev/null `
+        if [ x"$CHKCONFIG" != x ]
+        then
+            return 2
+        fi
+    else
+        return 2
+    fi
+
+    CHKCONFIG="/sbin/chkconfig"
+    DO_FORCE=
+    DEL_PARAM=--del
+    ADD_PARAM=--add
+    if [ ! -x "$CHKCONFIG" ]
+    then
+        CHKCONFIG=` whereis chkconfig 2>/dev/null | awk '{print $2}' 2>/dev/null `
+        if [ x"$CHKCONFIG" != x ]
+        then
+            return 1
+        fi
+    else
+        return 1
+    fi
+
+    echo "Sorry. It happened error when get service command. Not supported"
+    exit 1
+}
+
+#
+# set services boot order
+# 
+set_boot_order_one()
+{
+    if [ $1 -eq 1 ]
+    then
+        OTPCHCKCONTROL_ORDER_START=90
+        OTPCHCKCONTROL_ORDER_STOP=10
+    else
+        OTPCHCKCONTROL_ORDER_START=
+        OTPCHCKCONTROL_ORDER_STOP=
+    fi
+}
+
+#
+# add OTP Server services to chkconfig list
+#
+add_services_cmd_one()
+{
+    echo "Add OTP Server services to chkconfig list..."
+
+    # set services boot order, when use update-rc.d
+    get_service_cmd
+    if [ $? -eq 2 ]
+    then
+        set_boot_order_one 1
+    else
+        set_boot_order_one 0
+    fi
+
+    # create scripts
+    if [ $IS_ROOT -eq 0 ]
+    then
+        ROOT_RUN_FILE="add_services.sh"
+        if [ -f $ROOT_RUN_FILE ]
+        then
+            rm -f $ROOT_RUN_FILE 2>/dev/null
+        fi
+        touch $ROOT_RUN_FILE
+        chmod a+x $ROOT_RUN_FILE
+        echo "# Please run this scripts by root." >>$ROOT_RUN_FILE
+        echo "# This script add and start otp services." >>$ROOT_RUN_FILE
+        echo "" >>$ROOT_RUN_FILE
+
+        if [ $INSTALL_OTPCHCKCONTROL -eq 1 ]
+        then
+            echo "if [ -f $OTPCHCKCONTROL_PATH/$OTPCHCKCONTROL_SCRIPT ]" >>$ROOT_RUN_FILE
+            echo "then" >>$ROOT_RUN_FILE
+            echo "  rm -f $INIT_PATH/$OTPCHCKCONTROL_SCRIPT" >>$ROOT_RUN_FILE
+            echo "  mv -f $OTPCHCKCONTROL_PATH/$OTPCHCKCONTROL_SCRIPT $INIT_PATH/$OTPCHCKCONTROL_SCRIPT" >>$ROOT_RUN_FILE
+            echo "  $CHKCONFIG $DO_FORCE $OTPCHCKCONTROL_SCRIPT $DEL_PARAM 2>/dev/null" >>$ROOT_RUN_FILE
+            echo "  $CHKCONFIG $DO_FORCE $OTPCHCKCONTROL_SCRIPT $ADD_PARAM $OTPTOMCAT_ORDER_START $OTPTOMCAT_ORDER_STOP 2>/dev/null" >>$ROOT_RUN_FILE
+            echo "  if [ \$? -eq 0 ]" >>$ROOT_RUN_FILE
+            echo "  then" >>$ROOT_RUN_FILE
+            echo "    echo \"Add $OTPCHCKCONTROL_SCRIPT service success.\"" >>$ROOT_RUN_FILE
+            echo "  fi" >>$ROOT_RUN_FILE
+            echo "else" >>$ROOT_RUN_FILE
+            echo "  echo\"Please make sure $OTPCHCKCONTROL_SCRIPT exist!\"" >>$ROOT_RUN_FILE
+            echo "fi" >>$ROOT_RUN_FILE
+            echo "" >>$ROOT_RUN_FILE
+        fi
+
+        echo "echo \"Thank you for use OTP Server of Feitian Technologies Co., Ltd\"" >>$ROOT_RUN_FILE
+        echo "echo \"\"" >>$ROOT_RUN_FILE
+
+        echo ""
+        return
+    fi
+
+    # link service script and add services
+    if [ $INSTALL_OTPCHCKCONTROL -eq 1 ]
+    then
+        rm -f "$INIT_PATH/$OTPCHCKCONTROL_SCRIPT"
+        mv -f "$OTPCHCKCONTROL_PATH/$OTPCHCKCONTROL_SCRIPT" "$INIT_PATH/$OTPCHCKCONTROL_SCRIPT"
+        $CHKCONFIG $DO_FORCE $OTPCHCKCONTROL_SCRIPT $DEL_PARAM 2>/dev/null
+        $CHKCONFIG $DO_FORCE $OTPCHCKCONTROL_SCRIPT $ADD_PARAM $OTPCHCKCONTROL_ORDER_START $OTPCHCKCONTROL_ORDER_STOP 2>/dev/null
+    fi
+
+    if [ $? -eq 0 ]
+    then
+        echo "[OK]"
+    fi
+
+    echo ""
+}
+
+# This function is not used in standard product install script.
+# add services for OS like redhat
+#
+add_services_redhat()
+{
+    # create scripts
+    if [ $IS_ROOT -eq 0 ]
+    then
+        ROOT_RUN_FILE="add_services.sh"
+        if [ -f $ROOT_RUN_FILE ]
+        then
+            rm -f $ROOT_RUN_FILE 2>/dev/null
+        fi
+        touch $ROOT_RUN_FILE
+        chmod a+x $ROOT_RUN_FILE
+        echo "# Please run this scripts by root." >>$ROOT_RUN_FILE
+        echo "# This script add and start otp services." >>$ROOT_RUN_FILE
+        echo "" >>$ROOT_RUN_FILE
+
+        if [ $INSTALL_MYSQL -eq 1 ]
+        then
+            echo "rm -f $INIT_PATH/$OTPMYSQL_SCRIPT" >>$ROOT_RUN_FILE
+            echo "cp -f $OTPMYSQL_PATH/$OTPMYSQL_SCRIPT $INIT_PATH/$OTPMYSQL_SCRIPT" >>$ROOT_RUN_FILE
+            echo "$CHKCONFIG --del $OTPMYSQL_SCRIPT" >>$ROOT_RUN_FILE
+            echo "$CHKCONFIG --add $OTPMYSQL_SCRIPT" >>$ROOT_RUN_FILE
+            echo "if [ \$? -eq 0 ]" >>$ROOT_RUN_FILE
+            echo "then" >>$ROOT_RUN_FILE
+            echo "    echo \"Add $OTPMYSQL_SCRIPT service success.\"" >>$ROOT_RUN_FILE
+            echo "fi" >>$ROOT_RUN_FILE
+            echo "" >>$ROOT_RUN_FILE
+        fi
+
+        if [ $INSTALL_OTPSERVER -eq 1 ]
+        then
+            echo "rm -f $INIT_PATH/$OTPSERVER_SCRIPT" >>$ROOT_RUN_FILE
+            echo "cp -f $OTPSERVER_PATH/$OTPSERVER_SCRIPT $INIT_PATH/$OTPSERVER_SCRIPT" >>$ROOT_RUN_FILE
+            echo "$CHKCONFIG --del $OTPSERVER_SCRIPT" >>$ROOT_RUN_FILE
+            echo "$CHKCONFIG --add $OTPSERVER_SCRIPT" >>$ROOT_RUN_FILE
+            echo "if [ \$? -eq 0 ]" >>$ROOT_RUN_FILE
+            echo "then" >>$ROOT_RUN_FILE
+            echo "    echo \"Add $OTPSERVER_SCRIPT service success.\"" >>$ROOT_RUN_FILE
+            echo "fi" >>$ROOT_RUN_FILE
+            echo "" >>$ROOT_RUN_FILE
+        fi
+
+        if [ $INSTALL_TOMCAT -eq 1 ]
+        then
+            echo "rm -f $INIT_PATH/$OTPTOMCAT_SCRIPT" >>$ROOT_RUN_FILE
+            echo "cp -f $OTPTOMCAT_PATH/$OTPTOMCAT_SCRIPT $INIT_PATH/$OTPTOMCAT_SCRIPT" >>$ROOT_RUN_FILE
+            echo "$CHKCONFIG --del $OTPTOMCAT_SCRIPT" >>$ROOT_RUN_FILE
+            echo "$CHKCONFIG --add $OTPTOMCAT_SCRIPT" >>$ROOT_RUN_FILE
+            echo "if [ \$? -eq 0 ]" >>$ROOT_RUN_FILE
+            echo "then" >>$ROOT_RUN_FILE
+            echo "    echo \"Add $OTPTOMCAT_SCRIPT service success.\"" >>$ROOT_RUN_FILE
+            echo "fi" >>$ROOT_RUN_FILE
+            echo "" >>$ROOT_RUN_FILE
+        fi
+
+        if [ $INSTALL_OTPCHCKCONTROL -eq 1 ]
+        then
+            echo "rm -f $INIT_PATH/$OTPCHCKCONTROL_SCRIPT" >>$ROOT_RUN_FILE
+            echo "cp -f $OTPCHCKCONTROL_PATH/$OTPCHCKCONTROL_SCRIPT $INIT_PATH/$OTPCHCKCONTROL_SCRIPT" >>$ROOT_RUN_FILE
+            echo "$CHKCONFIG --del $OTPCHCKCONTROL_SCRIPT" >>$ROOT_RUN_FILE
+            echo "$CHKCONFIG --add $OTPCHCKCONTROL_SCRIPT" >>$ROOT_RUN_FILE
+            echo "if [ \$? -eq 0 ]" >>$ROOT_RUN_FILE
+            echo "then" >>$ROOT_RUN_FILE
+            echo "    echo \"Add $OTPCHCKCONTROL_SCRIPT service success.\"" >>$ROOT_RUN_FILE
+            echo "fi" >>$ROOT_RUN_FILE
+            echo "" >>$ROOT_RUN_FILE
+        fi
+
+        echo "echo \"Thank you for use OTP Server of Feitian Technologies Co., Ltd\"" >>$ROOT_RUN_FILE
+        echo "echo \"\"" >>$ROOT_RUN_FILE
+
+        echo "Please run $ROOT_RUN_FILE by root for add otp services!"
+        return
+    fi
+
+    # link service script and add services
+    if [ $INSTALL_MYSQL -eq 1 ]
+    then
+        rm -f "$INIT_PATH/$OTPMYSQL_SCRIPT"
+        cp -f "$OTPMYSQL_PATH/$OTPMYSQL_SCRIPT" "$INIT_PATH/$OTPMYSQL_SCRIPT"
+        $CHKCONFIG --del $OTPMYSQL_SCRIPT
+        $CHKCONFIG --add $OTPMYSQL_SCRIPT
+    fi
+
+    if [ $INSTALL_OTPSERVER -eq 1 ]
+    then
+        rm -f "$INIT_PATH/$OTPSERVER_SCRIPT"
+        cp -f "$OTPSERVER_PATH/$OTPSERVER_SCRIPT" "$INIT_PATH/$OTPSERVER_SCRIPT"
+        $CHKCONFIG --del $OTPSERVER_SCRIPT
+        $CHKCONFIG --add $OTPSERVER_SCRIPT
+    fi
+
+    if [ $INSTALL_TOMCAT -eq 1 ]
+    then
+        rm -f "$INIT_PATH/$OTPTOMCAT_SCRIPT"
+        cp -f "$OTPTOMCAT_PATH/$OTPTOMCAT_SCRIPT" "$INIT_PATH/$OTPTOMCAT_SCRIPT"
+        $CHKCONFIG --del $OTPTOMCAT_SCRIPT
+        $CHKCONFIG --add $OTPTOMCAT_SCRIPT
+    fi
+
+    if [ $INSTALL_OTPCHCKCONTROL -eq 1 ]
+    then
+        rm -f "$INIT_PATH/$OTPCHCKCONTROL_SCRIPT"
+        cp -f "$OTPCHCKCONTROL_PATH/$OTPCHCKCONTROL_SCRIPT" "$INIT_PATH/$OTPCHCKCONTROL_SCRIPT"
+        $CHKCONFIG --del $OTPCHCKCONTROL_SCRIPT
+        $CHKCONFIG --add $OTPCHCKCONTROL_SCRIPT
+    fi
+}
+
+# This function is not used in standard product install script.
+# add services for OS like ubuntu and debian
+#
+add_services_ubuntu_debian()
+{
+    # create scripts
+    if [ $IS_ROOT -eq 0 ]
+    then
+        ROOT_RUN_FILE="add_services.sh"
+        if [ -f $ROOT_RUN_FILE ]
+        then
+            rm -f $ROOT_RUN_FILE 2>/dev/null
+        fi
+        touch $ROOT_RUN_FILE
+        chmod a+x $ROOT_RUN_FILE
+        echo "# Please run this scripts by root." >>$ROOT_RUN_FILE
+        echo "# This script add and start otp services." >>$ROOT_RUN_FILE
+        echo "" >>$ROOT_RUN_FILE
+
+        if [ $INSTALL_MYSQL -eq 1 ]
+        then
+            echo "rm -f $INIT_PATH/$OTPMYSQL_SCRIPT" >>$ROOT_RUN_FILE
+            echo "cp -f $OTPMYSQL_PATH/$OTPMYSQL_SCRIPT $INIT_PATH/$OTPMYSQL_SCRIPT" >>$ROOT_RUN_FILE
+            echo "$CHKCONFIG -f $OTPMYSQL_SCRIPT remove" >>$ROOT_RUN_FILE
+            echo "$CHKCONFIG $OTPMYSQL_SCRIPT defaults" >>$ROOT_RUN_FILE
+            echo "if [ \$? -eq 0 ]" >>$ROOT_RUN_FILE
+            echo "then" >>$ROOT_RUN_FILE
+            echo "    echo \"Add $OTPMYSQL_SCRIPT service success.\"" >>$ROOT_RUN_FILE
+            echo "fi" >>$ROOT_RUN_FILE
+            echo "" >>$ROOT_RUN_FILE
+        fi
+
+        if [ $INSTALL_OTPSERVER -eq 1 ]
+        then
+            echo "rm -f $INIT_PATH/$OTPSERVER_SCRIPT" >>$ROOT_RUN_FILE
+            echo "cp -f $OTPSERVER_PATH/$OTPSERVER_SCRIPT $INIT_PATH/$OTPSERVER_SCRIPT" >>$ROOT_RUN_FILE
+            echo "$CHKCONFIG -f $OTPSERVER_SCRIPT remove" >>$ROOT_RUN_FILE
+            echo "$CHKCONFIG $OTPSERVER_SCRIPT defaults" >>$ROOT_RUN_FILE
+            echo "if [ \$? -eq 0 ]" >>$ROOT_RUN_FILE
+            echo "then" >>$ROOT_RUN_FILE
+            echo "    echo \"Add $OTPSERVER_SCRIPT service success.\"" >>$ROOT_RUN_FILE
+            echo "fi" >>$ROOT_RUN_FILE
+            echo "" >>$ROOT_RUN_FILE
+        fi
+
+        if [ $INSTALL_TOMCAT -eq 1 ]
+        then
+            echo "rm -f $INIT_PATH/$OTPTOMCAT_SCRIPT" >>$ROOT_RUN_FILE
+            echo "cp -f $OTPTOMCAT_PATH/$OTPTOMCAT_SCRIPT $INIT_PATH/$OTPTOMCAT_SCRIPT" >>$ROOT_RUN_FILE
+            echo "$CHKCONFIG -f $OTPTOMCAT_SCRIPT remove" >>$ROOT_RUN_FILE
+            echo "$CHKCONFIG $OTPTOMCAT_SCRIPT defaults" >>$ROOT_RUN_FILE
+            echo "if [ \$? -eq 0 ]" >>$ROOT_RUN_FILE
+            echo "then" >>$ROOT_RUN_FILE
+            echo "    echo \"Add $OTPTOMCAT_SCRIPT service success.\"" >>$ROOT_RUN_FILE
+            echo "fi" >>$ROOT_RUN_FILE
+            echo "" >>$ROOT_RUN_FILE
+        fi
+
+        if [ $INSTALL_OTPCHCKCONTROL -eq 1 ]
+        then
+            echo "rm -f $INIT_PATH/$OTPCHCKCONTROL_SCRIPT" >>$ROOT_RUN_FILE
+            echo "cp -f $OTPCHCKCONTROL_PATH/$OTPCHCKCONTROL_SCRIPT $INIT_PATH/$OTPCHCKCONTROL_SCRIPT" >>$ROOT_RUN_FILE
+            echo "$CHKCONFIG -f $OTPCHCKCONTROL_SCRIPT remove" >>$ROOT_RUN_FILE
+            echo "$CHKCONFIG $OTPCHCKCONTROL_SCRIPT defaults" >>$ROOT_RUN_FILE
+            echo "if [ \$? -eq 0 ]" >>$ROOT_RUN_FILE
+            echo "then" >>$ROOT_RUN_FILE
+            echo "    echo \"Add $OTPCHCKCONTROL_SCRIPT service success.\"" >>$ROOT_RUN_FILE
+            echo "fi" >>$ROOT_RUN_FILE
+            echo "" >>$ROOT_RUN_FILE
+        fi
+
+        echo "echo \"Thank you for use OTP Server of Feitian Technologies Co., Ltd\"" >>$ROOT_RUN_FILE
+        echo "echo \"\"" >>$ROOT_RUN_FILE
+
+        echo "Please run $ROOT_RUN_FILE by root for add otp services!"
+        return
+    fi
+
+    # link service script and add services
+    if [ $INSTALL_MYSQL -eq 1 ]
+    then
+        rm -f "$INIT_PATH/$OTPMYSQL_SCRIPT"
+        cp -f "$OTPMYSQL_PATH/$OTPMYSQL_SCRIPT" "$INIT_PATH/$OTPMYSQL_SCRIPT"
+        $CHKCONFIG -f $OTPMYSQL_SCRIPT remove
+        $CHKCONFIG $OTPMYSQL_SCRIPT defaults
+    fi
+
+    if [ $INSTALL_OTPSERVER -eq 1 ]
+    then
+        rm -f "$INIT_PATH/$OTPSERVER_SCRIPT"
+        cp -f "$OTPSERVER_PATH/$OTPSERVER_SCRIPT" "$INIT_PATH/$OTPSERVER_SCRIPT"
+        $CHKCONFIG -f $OTPSERVER_SCRIPT remove
+        $CHKCONFIG $OTPSERVER_SCRIPT defaults
+    fi
+
+    if [ $INSTALL_TOMCAT -eq 1 ]
+    then
+        rm -f "$INIT_PATH/$OTPTOMCAT_SCRIPT"
+        cp -f "$OTPTOMCAT_PATH/$OTPTOMCAT_SCRIPT" "$INIT_PATH/$OTPTOMCAT_SCRIPT"
+        $CHKCONFIG -f $OTPTOMCAT_SCRIPT remove
+        $CHKCONFIG $OTPTOMCAT_SCRIPT defaults
+    fi
+
+    if [ $INSTALL_OTPCHCKCONTROL -eq 1 ]
+    then
+        rm -f "$INIT_PATH/$OTPCHCKCONTROL_SCRIPT"
+        cp -f "$OTPCHCKCONTROL_PATH/$OTPCHCKCONTROL_SCRIPT" "$INIT_PATH/$OTPCHCKCONTROL_SCRIPT"
+        $CHKCONFIG -f $OTPCHCKCONTROL_SCRIPT remove
+        $CHKCONFIG $OTPCHCKCONTROL_SCRIPT defaults
+    fi
+}
+
+# This function is not used in standard product install script.
+# add OTP Server services to chkconfig list
+#
+add_services_os()
+{
+    echo "Add OTP Server services to chkconfig list..."
+    get_service_cmd
+    CMD_TYPE=$?
+    case $CMD_TYPE in
+    1)
+        add_services_redhat
+        ;;
+    2)
+        add_services_ubuntu_debian
+        ;;
+    *)
+        echo -n "Warning: chkconfig could not be found!"
+        echo -n "If you want to start OTP Server when the machine is started, "
+        echo -n "Please modify / copy 'OTPAuthServer/"$OTPSERVER_SCRIPT"' to directory like '/etc/init.d'."
+        exit 1
+        ;;
+    esac
+
+    if [ $? -eq 0 ]
+    then
+        echo "[OK]"
+    fi
+
+    echo ""
+}
+
+# This function is not used in standard product install script.
+# set services boot order
+# 
+set_boot_order()
+{
+    if [ $1 -eq 1 ]
+    then
+        OTPMYSQL_ORDER_START=62
+        OTPMYSQL_ORDER_STOP=38
+        OTPSERVER_ORDER_START=88
+        OTPSERVER_ORDER_STOP=12
+        OTPTOMCAT_ORDER_START=89
+        OTPTOMCAT_ORDER_STOP=11
+        OTPCHCKCONTROL_ORDER_START=90
+        OTPCHCKCONTROL_ORDER_STOP=10
+    else
+        OTPMYSQL_ORDER_START=
+        OTPMYSQL_ORDER_STOP=
+        OTPSERVER_ORDER_START=
+        OTPSERVER_ORDER_STOP=
+        OTPTOMCAT_ORDER_START=
+        OTPTOMCAT_ORDER_STOP=
+        OTPCHCKCONTROL_ORDER_START=
+        OTPCHCKCONTROL_ORDER_STOP=
+    fi
+}
+
+# This function is not used in standard product install script.
+# add OTP Server services to chkconfig list
+#
+add_services_cmd()
+{
+    echo "Add OTP Server services to chkconfig list..."
+
+    # set services boot order, when use update-rc.d
+    get_service_cmd
+    if [ $? -eq 2 ]
+    then
+        set_boot_order 1
+    else
+        set_boot_order 0
+    fi
+
+    # create scripts
+    if [ $IS_ROOT -eq 0 ]
+    then
+        ROOT_RUN_FILE="add_services.sh"
+        if [ -f $ROOT_RUN_FILE ]
+        then
+            rm -f $ROOT_RUN_FILE 2>/dev/null
+        fi
+        touch $ROOT_RUN_FILE
+        chmod a+x $ROOT_RUN_FILE
+        echo "# Please run this scripts by root." >>$ROOT_RUN_FILE
+        echo "# This script add and start otp services." >>$ROOT_RUN_FILE
+        echo "" >>$ROOT_RUN_FILE
+
+        if [ $INSTALL_MYSQL -eq 1 ]
+        then
+            echo "rm -f $INIT_PATH/$OTPMYSQL_SCRIPT" >>$ROOT_RUN_FILE
+            echo "cp -f $OTPMYSQL_PATH/$OTPMYSQL_SCRIPT $INIT_PATH/$OTPMYSQL_SCRIPT" >>$ROOT_RUN_FILE
+            echo "$CHKCONFIG $DO_FORCE $OTPMYSQL_SCRIPT $DEL_PARAM 2>/dev/null" >>$ROOT_RUN_FILE
+            echo "$CHKCONFIG $DO_FORCE $OTPMYSQL_SCRIPT $ADD_PARAM $OTPMYSQL_ORDER_START $OTPMYSQL_ORDER_STOP 2>/dev/null" >>$ROOT_RUN_FILE
+            echo "if [ \$? -eq 0 ]" >>$ROOT_RUN_FILE
+            echo "then" >>$ROOT_RUN_FILE
+            echo "    echo \"Add $OTPMYSQL_SCRIPT service success.\"" >>$ROOT_RUN_FILE
+            echo "fi" >>$ROOT_RUN_FILE
+            echo "" >>$ROOT_RUN_FILE
+        fi
+
+        if [ $INSTALL_OTPSERVER -eq 1 ]
+        then
+            echo "rm -f $INIT_PATH/$OTPSERVER_SCRIPT" >>$ROOT_RUN_FILE
+            echo "cp -f $OTPSERVER_PATH/$OTPSERVER_SCRIPT $INIT_PATH/$OTPSERVER_SCRIPT" >>$ROOT_RUN_FILE
+            echo "$CHKCONFIG $DO_FORCE $OTPSERVER_SCRIPT $DEL_PARAM 2>/dev/null" >>$ROOT_RUN_FILE
+            echo "$CHKCONFIG $DO_FORCE $OTPSERVER_SCRIPT $ADD_PARAM $OTPSERVER_ORDER_START $OTPSERVER_ORDER_STOP 2>/dev/null" >>$ROOT_RUN_FILE
+            echo "if [ \$? -eq 0 ]" >>$ROOT_RUN_FILE
+            echo "then" >>$ROOT_RUN_FILE
+            echo "    echo \"Add $OTPSERVER_SCRIPT service success.\"" >>$ROOT_RUN_FILE
+            echo "fi" >>$ROOT_RUN_FILE
+            echo "" >>$ROOT_RUN_FILE
+        fi
+
+        if [ $INSTALL_TOMCAT -eq 1 ]
+        then
+            echo "rm -f $INIT_PATH/$OTPTOMCAT_SCRIPT" >>$ROOT_RUN_FILE
+            echo "cp -f $OTPTOMCAT_PATH/$OTPTOMCAT_SCRIPT $INIT_PATH/$OTPTOMCAT_SCRIPT" >>$ROOT_RUN_FILE
+            echo "$CHKCONFIG $DO_FORCE $OTPTOMCAT_SCRIPT $DEL_PARAM 2>/dev/null" >>$ROOT_RUN_FILE
+            echo "$CHKCONFIG $DO_FORCE $OTPTOMCAT_SCRIPT $ADD_PARAM $OTPTOMCAT_ORDER_START $OTPTOMCAT_ORDER_STOP 2>/dev/null" >>$ROOT_RUN_FILE
+            echo "if [ \$? -eq 0 ]" >>$ROOT_RUN_FILE
+            echo "then" >>$ROOT_RUN_FILE
+            echo "    echo \"Add $OTPTOMCAT_SCRIPT service success.\"" >>$ROOT_RUN_FILE
+            echo "fi" >>$ROOT_RUN_FILE
+            echo "" >>$ROOT_RUN_FILE
+        fi
+
+        if [ $INSTALL_OTPCHCKCONTROL -eq 1 ]
+        then
+            echo "rm -f $INIT_PATH/$OTPCHCKCONTROL_SCRIPT" >>$ROOT_RUN_FILE
+            echo "cp -f $OTPCHCKCONTROL_PATH/$OTPCHCKCONTROL_SCRIPT $INIT_PATH/$OTPCHCKCONTROL_SCRIPT" >>$ROOT_RUN_FILE
+            echo "$CHKCONFIG $DO_FORCE $OTPCHCKCONTROL_SCRIPT $DEL_PARAM 2>/dev/null" >>$ROOT_RUN_FILE
+            echo "$CHKCONFIG $DO_FORCE $OTPCHCKCONTROL_SCRIPT $ADD_PARAM $OTPTOMCAT_ORDER_START $OTPTOMCAT_ORDER_STOP 2>/dev/null" >>$ROOT_RUN_FILE
+            echo "if [ \$? -eq 0 ]" >>$ROOT_RUN_FILE
+            echo "then" >>$ROOT_RUN_FILE
+            echo "    echo \"Add $OTPCHCKCONTROL_SCRIPT service success.\"" >>$ROOT_RUN_FILE
+            echo "fi" >>$ROOT_RUN_FILE
+            echo "" >>$ROOT_RUN_FILE
+        fi
+
+        echo "echo \"Thank you for use OTP Server of Feitian Technologies Co., Ltd\"" >>$ROOT_RUN_FILE
+        echo "echo \"\"" >>$ROOT_RUN_FILE
+
+        echo "Please run $ROOT_RUN_FILE by root for add otp services!"
+        echo ""
+        return
+    fi
+
+    # link service script and add services
+    if [ $INSTALL_MYSQL -eq 1 ]
+    then
+        rm -f "$INIT_PATH/$OTPMYSQL_SCRIPT"
+        cp -f "$OTPMYSQL_PATH/$OTPMYSQL_SCRIPT" "$INIT_PATH/$OTPMYSQL_SCRIPT"
+        $CHKCONFIG $DO_FORCE $OTPMYSQL_SCRIPT $DEL_PARAM 2>/dev/null
+        $CHKCONFIG $DO_FORCE $OTPMYSQL_SCRIPT $ADD_PARAM $OTPMYSQL_ORDER_START $OTPMYSQL_ORDER_STOP 2>/dev/null
+    fi
+
+    if [ $INSTALL_OTPSERVER -eq 1 ]
+    then
+        rm -f "$INIT_PATH/$OTPSERVER_SCRIPT"
+        cp -f "$OTPSERVER_PATH/$OTPSERVER_SCRIPT" "$INIT_PATH/$OTPSERVER_SCRIPT"
+        $CHKCONFIG $DO_FORCE $OTPSERVER_SCRIPT $DEL_PARAM 2>/dev/null
+        $CHKCONFIG $DO_FORCE $OTPSERVER_SCRIPT $ADD_PARAM $OTPSERVER_ORDER_START $OTPSERVER_ORDER_STOP 2>/dev/null
+    fi
+
+    if [ $INSTALL_TOMCAT -eq 1 ]
+    then
+        rm -f "$INIT_PATH/$OTPTOMCAT_SCRIPT"
+        cp -f "$OTPTOMCAT_PATH/$OTPTOMCAT_SCRIPT" "$INIT_PATH/$OTPTOMCAT_SCRIPT"
+        $CHKCONFIG $DO_FORCE $OTPTOMCAT_SCRIPT $DEL_PARAM 2>/dev/null
+        $CHKCONFIG $DO_FORCE $OTPTOMCAT_SCRIPT $ADD_PARAM $OTPTOMCAT_ORDER_START $OTPTOMCAT_ORDER_STOP 2>/dev/null
+    fi
+
+    if [ $INSTALL_OTPCHCKCONTROL -eq 1 ]
+    then
+        rm -f "$INIT_PATH/$OTPCHCKCONTROL_SCRIPT"
+        cp -f "$OTPCHCKCONTROL_PATH/$OTPCHCKCONTROL_SCRIPT" "$INIT_PATH/$OTPCHCKCONTROL_SCRIPT"
+        $CHKCONFIG $DO_FORCE $OTPCHCKCONTROL_SCRIPT $DEL_PARAM 2>/dev/null
+        $CHKCONFIG $DO_FORCE $OTPCHCKCONTROL_SCRIPT $ADD_PARAM $OTPCHCKCONTROL_ORDER_START $OTPCHCKCONTROL_ORDER_STOP 2>/dev/null
+    fi
+
+    if [ $? -eq 0 ]
+    then
+        echo "[OK]"
+    fi
+
+    echo ""
+}
+
+# This function is not used in standard product install script.
+# add service used variables
+#
+add_service_vars()
+{
+    if [ -d /etc/rc3.d -o -d /etc/rc0.d ]
+    then
+        ETC_RC_2_D="/etc/rc2.d"
+        ETC_RC_3_D="/etc/rc3.d"
+        ETC_RC_4_D="/etc/rc4.d"
+        ETC_RC_5_D="/etc/rc5.d"
+   elif [ -d /etc/init.d/rc3.d -o -d /etc/init.d/rc0.d ]
+   then
+        ETC_RC_2_D="/etc/init.d/rc2.d"
+        ETC_RC_3_D="/etc/init.d/rc3.d"
+        ETC_RC_4_D="/etc/init.d/rc4.d"
+        ETC_RC_5_D="/etc/init.d/rc5.d"
+    else
+        echo "Sorry. It happened error when add service. Not supported"
+        exit 1
+    fi
+
+    SRART="S"
+    STOP="K"
+}
+
+# This function is not used in standard product install script.
+# add service execute by root
+# $1 script name; $2 start order; $3 stop order;
+add_service_exec()
+{
+    local SCRIPT_START="${SRART}$2$1"
+    local SCRIPT_STOP="${STOP}$3$1"
+
+    ln -s $INIT_PATH/$1 ${ETC_RC_2_D}/$SCRIPT_START 2>/dev/null
+    ln -s $INIT_PATH/$1 ${ETC_RC_3_D}/$SCRIPT_START 2>/dev/null
+    ln -s $INIT_PATH/$1 ${ETC_RC_4_D}/$SCRIPT_START 2>/dev/null
+    ln -s $INIT_PATH/$1 ${ETC_RC_5_D}/$SCRIPT_START 2>/dev/null
+
+    ln -s $INIT_PATH/$1 ${ETC_RC_2_D}/$SCRIPT_STOP 2>/dev/null
+    ln -s $INIT_PATH/$1 ${ETC_RC_3_D}/$SCRIPT_STOP 2>/dev/null
+    ln -s $INIT_PATH/$1 ${ETC_RC_4_D}/$SCRIPT_STOP 2>/dev/null
+    ln -s $INIT_PATH/$1 ${ETC_RC_5_D}/$SCRIPT_STOP 2>/dev/null
+}
+
+# This function is not used in standard product install script.
+# add service commands output
+# $1 script name; $2 start order; $3 stop order; $4 output file;
+add_service_output()
+{
+    local SCRIPT_START="${SRART}$2$1"
+    local SCRIPT_STOP="${STOP}$3$1"
+
+    echo "ln -s $INIT_PATH/$1 ${ETC_RC_2_D}/$SCRIPT_START 2>/dev/null" >> $4
+    echo "ln -s $INIT_PATH/$1 ${ETC_RC_3_D}/$SCRIPT_START 2>/dev/null" >> $4
+    echo "ln -s $INIT_PATH/$1 ${ETC_RC_4_D}/$SCRIPT_START 2>/dev/null" >> $4
+    echo "ln -s $INIT_PATH/$1 ${ETC_RC_5_D}/$SCRIPT_START 2>/dev/null" >> $4
+
+    echo "ln -s $INIT_PATH/$1 ${ETC_RC_2_D}/$SCRIPT_STOP 2>/dev/null" >> $4
+    echo "ln -s $INIT_PATH/$1 ${ETC_RC_3_D}/$SCRIPT_STOP 2>/dev/null" >> $4
+    echo "ln -s $INIT_PATH/$1 ${ETC_RC_4_D}/$SCRIPT_STOP 2>/dev/null" >> $4
+    echo "ln -s $INIT_PATH/$1 ${ETC_RC_5_D}/$SCRIPT_STOP 2>/dev/null" >> $4
+}
+
+# This function is not used in standard product install script.
+# add OTP Server services to chkconfig list
+#
+add_services_new()
+{
+    echo "Add OTP Server services to chkconfig list..."
+
+    add_service_vars
+
+    if [ $IS_ROOT -eq 0 ]
+    then
+        ROOT_RUN_FILE="add_services.sh"
+        if [ -f $ROOT_RUN_FILE ]
+        then
+            rm -f $ROOT_RUN_FILE 2>/dev/null
+        fi
+        touch $ROOT_RUN_FILE
+        chmod a+x $ROOT_RUN_FILE
+        # some description of scripts
+        echo "# Please run this scripts by root." >>$ROOT_RUN_FILE
+        echo "# This script add and start otp services." >>$ROOT_RUN_FILE
+        echo "" >>$ROOT_RUN_FILE
+
+        if [ $INSTALL_MYSQL -eq 1 ]
+        then
+            echo "rm -f $INIT_PATH/$OTPMYSQL_SCRIPT" >>$ROOT_RUN_FILE
+            echo "cp -f $OTPMYSQL_PATH/$OTPMYSQL_SCRIPT $INIT_PATH/$OTPMYSQL_SCRIPT" >>$ROOT_RUN_FILE
+            OTPMYSQL_ORDER_START=62
+            OTPMYSQL_ORDER_STOP=38
+            add_service_output "$OTPMYSQL_SCRIPT" "$OTPMYSQL_ORDER_START" "$OTPMYSQL_ORDER_STOP" "$ROOT_RUN_FILE"
+            echo "if [ \$? -eq 0 ]" >>$ROOT_RUN_FILE
+            echo "then" >>$ROOT_RUN_FILE
+            echo "    echo \"Add $OTPMYSQL_SCRIPT service success.\"" >>$ROOT_RUN_FILE
+            echo "fi" >>$ROOT_RUN_FILE
+            echo "" >>$ROOT_RUN_FILE
+        fi
+
+        if [ $INSTALL_OTPSERVER -eq 1 ]
+        then
+            echo "rm -f $INIT_PATH/$OTPSERVER_SCRIPT" >>$ROOT_RUN_FILE
+            echo "cp -f $OTPSERVER_PATH/$OTPSERVER_SCRIPT $INIT_PATH/$OTPSERVER_SCRIPT" >>$ROOT_RUN_FILE
+            OTPSERVER_ORDER_START=88
+            OTPSERVER_ORDER_STOP=12
+            add_service_output "$OTPSERVER_SCRIPT" "$OTPSERVER_ORDER_START" "$OTPSERVER_ORDER_STOP" "$ROOT_RUN_FILE"
+            echo "if [ \$? -eq 0 ]" >>$ROOT_RUN_FILE
+            echo "then" >>$ROOT_RUN_FILE
+            echo "    echo \"Add $OTPSERVER_SCRIPT service success.\"" >>$ROOT_RUN_FILE
+            echo "fi" >>$ROOT_RUN_FILE
+            echo "" >>$ROOT_RUN_FILE
+        fi
+
+        if [ $INSTALL_TOMCAT -eq 1 ]
+        then
+            echo "rm -f $INIT_PATH/$OTPTOMCAT_SCRIPT" >>$ROOT_RUN_FILE
+            echo "cp -f $OTPTOMCAT_PATH/$OTPTOMCAT_SCRIPT $INIT_PATH/$OTPTOMCAT_SCRIPT" >>$ROOT_RUN_FILE
+            OTPTOMCAT_ORDER_START=89
+            OTPTOMCAT_ORDER_STOP=11
+            add_service_output "$OTPTOMCAT_SCRIPT" "$OTPTOMCAT_ORDER_START" "$OTPTOMCAT_ORDER_STOP" "$ROOT_RUN_FILE"
+            echo "if [ \$? -eq 0 ]" >>$ROOT_RUN_FILE
+            echo "then" >>$ROOT_RUN_FILE
+            echo "    echo \"Add $OTPTOMCAT_SCRIPT service success.\"" >>$ROOT_RUN_FILE
+            echo "fi" >>$ROOT_RUN_FILE
+            echo "" >>$ROOT_RUN_FILE
+        fi
+
+        if [ $INSTALL_OTPCHCKCONTROL -eq 1 ]
+        then
+            echo "rm -f $INIT_PATH/$OTPCHCKCONTROL_SCRIPT" >>$ROOT_RUN_FILE
+            echo "cp -f $OTPCHCKCONTROL_PATH/$OTPCHCKCONTROL_SCRIPT $INIT_PATH/$OTPCHCKCONTROL_SCRIPT" >>$ROOT_RUN_FILE
+            OTPTOMCAT_ORDER_START=90
+            OTPTOMCAT_ORDER_STOP=10
+            add_service_output "$OTPCHCKCONTROL_SCRIPT" "$OTPCHCKCONTROL_ORDER_START" "$OTPCHCKCONTROL_ORDER_STOP" "$ROOT_RUN_FILE"
+            echo "if [ \$? -eq 0 ]" >>$ROOT_RUN_FILE
+            echo "then" >>$ROOT_RUN_FILE
+            echo "    echo \"Add $OTPCHCKCONTROL_SCRIPT service success.\"" >>$ROOT_RUN_FILE
+            echo "fi" >>$ROOT_RUN_FILE
+            echo "" >>$ROOT_RUN_FILE
+        fi
+
+        echo "echo \"Thank you for use OTP Server of Feitian Technologies Co., Ltd\"" >>$ROOT_RUN_FILE
+        echo "echo \"\"" >>$ROOT_RUN_FILE
+
+        echo "Please run $ROOT_RUN_FILE by root for add otp services!"
+        echo ""
+        return
+    fi
+
+    # link service script
+    if [ $INSTALL_MYSQL -eq 1 ]
+    then
+        rm -f "$INIT_PATH/$OTPMYSQL_SCRIPT"
+        cp -f "$OTPMYSQL_PATH/$OTPMYSQL_SCRIPT" "$INIT_PATH/$OTPMYSQL_SCRIPT"
+        OTPMYSQL_ORDER_START=62
+        OTPMYSQL_ORDER_STOP=38
+        add_service_exec "$OTPMYSQL_SCRIPT" "$OTPMYSQL_ORDER_START" "$OTPMYSQL_ORDER_STOP"
+    fi
+
+    if [ $INSTALL_OTPSERVER -eq 1 ]
+    then
+        rm -f "$INIT_PATH/$OTPSERVER_SCRIPT"
+        cp -f "$OTPSERVER_PATH/$OTPSERVER_SCRIPT" "$INIT_PATH/$OTPSERVER_SCRIPT"
+        OTPSERVER_ORDER_START=88
+        OTPSERVER_ORDER_STOP=12
+        add_service_exec "$OTPSERVER_SCRIPT" "$OTPSERVER_ORDER_START" "$OTPSERVER_ORDER_STOP"
+    fi
+
+    if [ $INSTALL_TOMCAT -eq 1 ]
+    then
+        rm -f "$INIT_PATH/$OTPTOMCAT_SCRIPT"
+        cp -f "$OTPTOMCAT_PATH/$OTPTOMCAT_SCRIPT" "$INIT_PATH/$OTPTOMCAT_SCRIPT"
+        OTPTOMCAT_ORDER_START=89
+        OTPTOMCAT_ORDER_STOP=11
+        add_service_exec "$OTPTOMCAT_SCRIPT" "$OTPTOMCAT_ORDER_START" "$OTPTOMCAT_ORDER_STOP"
+    fi
+
+    if [ $INSTALL_OTPCHCKCONTROL -eq 1 ]
+    then
+        rm -f "$INIT_PATH/$OTPCHCKCONTROL_SCRIPT"
+        cp -f "$OTPCHCKCONTROL_PATH/$OTPCHCKCONTROL_SCRIPT" "$INIT_PATH/$OTPCHCKCONTROL_SCRIPT"
+        OTPTOMCAT_ORDER_START=90
+        OTPTOMCAT_ORDER_STOP=10
+        add_service_exec "$OTPCHCKCONTROL_SCRIPT" "$OTPCHCKCONTROL_ORDER_START" "$OTPCHCKCONTROL_ORDER_STOP"
+    fi
+
+    if [ $? -eq 0 ]
+    then
+        echo "[OK]"
+    fi
+
+    echo ""
+}
+
+#
+# start OTP Server services 
+#
+start_services()
+{
+    echo "Start OTP Server services..."
+
+    # start services
+    if [ $INSTALL_OTPCHCKCONTROL -eq 1 ]
+    then
+        if [ $IS_ROOT -eq 1 ]
+        then
+            $INIT_PATH/$OTPCHCKCONTROL_SCRIPT start
+        else
+            $OTPCHCKCONTROL_PATH/$OTPCHCKCONTROL_SCRIPT start
+        fi
+    fi
+
+    if [ $? -eq 0 ]
+    then
+        echo "[OK]"
+    fi
+
+    echo ""
+}
+
+#
+# print thanks of user choose
+#
+thanks()
+{
+    echo "The OTP Server v4.0.0 has been installed in '$BASE_PATH'."
+    if [ $IS_ROOT -eq 0 ]
+    then
+        echo "Please run $ROOT_RUN_FILE by root for add otp services!"
+    fi
+    if [ $INSTALL_OTPCENTER -eq 1 ]
+    then
+        echo "Please use http://ip:18004/otpcenter to visit OTP Center."
+    fi
+    if [ $INSTALL_OTPPORTAL -eq 1 ]
+    then
+        echo "Please use http://ip:18004/otpportal to visit OTP user portal."
+    fi
+    echo "Thank you for use OTP Server of Feitian Technologies Co., Ltd"
+    echo ""
+}
+
+#
+# install as call functions above
+#
+intsall_otp_server_system()
+{
+    check_package
+    check_read_e
+
+    #check_user             #need mod
+    check_license
+    check_memory
+
+    deal_params $*
+    create_user_group       #need mod
+    set_path
+
+    get_install
+    copy_otpserver_files    #need mod
+    modify_scripts
+
+    add_services_cmd_one
+    start_services
+
+    thanks
+}
+
+intsall_otp_server_system $*

@@ -1,0 +1,1048 @@
+#!/bin/sh
+#
+# uninstall - uninstall the install products 
+# these servers' configure files, these servers' scripts
+#
+
+#
+# Check read command option -e, ubuntu not support.
+#
+check_read_e()
+{
+    ` echo "input" | read $READ_E 2>/dev/null `
+    if [ $? -eq 0 ]
+    then
+        READ_E=-e
+    fi
+}
+
+#
+# Set OTP Server install path, please do NOT modify these variables!
+#
+set_path()
+{
+    DEFAULT_PATH=/home/ftotp/otpserver
+
+    echo -n  "Please input the install path ["$DEFAULT_PATH"]: " 
+    read $READ_E BASE_PATH
+    if [ x"$BASE_PATH" = x ]
+    then
+        BASE_PATH="$DEFAULT_PATH"
+    fi
+
+    if [ ! -d "$BASE_PATH" ]
+    then
+        echo "The path is not exist."
+        exit 1;
+    fi
+
+    MYSQL_DIR=mysql
+    JDK_DIR=jdk
+    AUTHSERVER_DIR=otpauthservice
+    WEBSERVER_DIR=otpwebservice
+    TOMCAT_DIR=tomcat
+    OTPCENTER_DIR=otpcenter
+    OTPPORTAL_DIR=otpportal
+
+    OTPMYSQL_PATH="$BASE_PATH/$MYSQL_DIR"
+    JDK_PATH="$BASE_PATH/$JDK_DIR"
+    OTPSERVER_PATH="$BASE_PATH/$AUTHSERVER_DIR"
+    OTPTOMCAT_PATH="$BASE_PATH/$WEBSERVER_DIR"
+    OTPCENTER_PATH="$OTPTOMCAT_PATH/$TOMCAT_DIR/webapps/$OTPCENTER_DIR"
+    OTPPORTAL_PATH="$OTPTOMCAT_PATH/$TOMCAT_DIR/webapps/$OTPPORTAL_DIR"
+
+    INIT_PATH="/etc/init.d"
+    OTPMYSQL_SCRIPT=otpmysql
+    OTPSERVER_SCRIPT=otpauthservice
+    OTPTOMCAT_SCRIPT=otpwebservice
+    
+    OTPCHCKCONTROL_SCRIPT=otpserver
+    OTPCHCKCONTROL_LOGFILE=otpserver.log
+    CHECKSERVICES_SCRIPT=otpserverd
+    CHECKSERVICES_LOGFILE=otpserverd.log
+    OTPCHCKCONTROL_PATH="$BASE_PATH"
+
+    UNINSTALL_SCRIPT=uninstall
+    UNSTALL_PATH="$BASE_PATH"
+
+    echo "" 
+}
+
+#
+# Check for root
+#
+check_user()
+{
+    if [ x"$EUID" = x ]
+    then
+        if [ ! `id -u` = 0 ]
+        then
+            #echo "You need to run this script as root!"
+            return 0
+            exit 1
+        fi
+    else
+        if [ ! $EUID = 0 ]
+        then
+            #echo "You need to run this script as root!"
+            return 0
+            exit 1
+        fi
+    fi
+
+    return 1
+}
+
+#
+# Check parameter for user and group
+#
+#
+deal_params()
+{
+    while [ x"$1" != x ]; do
+        if [ x"$2" = x ]
+        then
+            if [ x"$4" = x ]
+            then 
+                echo "Your parameter is not right.usage: ./uninstall -o username -g group!"
+                exit 1;
+            fi
+        fi
+
+        case $1 in
+        -o) if [ x"$OWNER_ARG" = x ]
+            then
+                OWNER_ARG="-o $2"
+            else
+                OWNER_ARG="$OWNER_ARG -o $2"
+            fi
+            OWNER_USER=$2
+            shift
+            shift
+            continue
+            ;;
+
+        -g) if [ x"$OWNER_ARG" = x ]
+            then
+                OWNER_ARG="-g $2"
+            else
+                OWNER_ARG="$OWNER_ARG -g $2"
+            fi
+            OWNER_GROUP=$2
+            shift
+            shift
+            continue
+            ;;
+        *)
+            echo "Your parameter is not right.usage: ./uninstall -o username -g group!"
+            exit 1
+            ;;
+        esac
+    done
+
+    # is root 
+    check_user
+    IS_ROOT=$?
+
+    USER="ftotp"
+    GROUP="ftotp"
+    if [ x"$OWNER_ARG" = x -o x"$OWNER_USER" = x -o x"$OWNER_GROUP" = x ]
+    then
+        if [ $IS_ROOT -eq 0 ]
+        then
+            OWNER_USER=` whoami `
+            if [ x"$OWNER_USER" = x ]
+            then
+                echo "Get user'name failed!"
+                exit 1
+            fi
+            OWNER_GROUP=` groups `
+            if [ x"$OWNER_GROUP" = x ]
+            then
+                echo "Get user'name failed."
+                exit 1
+            fi
+        else
+            OWNER_USER=$USER
+            OWNER_GROUP=$GROUP
+        fi
+        OWNER_ARG="-o $OWNER_USER -g $OWNER_GROUP"
+    fi
+}
+
+#
+# Check for terms of the license
+#
+check_license()
+{
+    echo "Copyright (C) 2007-2013 Feitian Technologies Co., Ltd."
+    echo ""
+    echo "Welcome to the OTP Server v4.0.0 uninstaller"
+    echo ""
+    echo -n  "This uninstall will remove the whole data of OTP Server v4.0.0, really? (Y/N) [N]: " 
+    read $READ_E resp
+
+    resp=`echo "x$resp" | tr '[A-Z]' '[a-z]'`
+    if [ $resp != "xy" ]
+    then
+        echo "We can not continue unless you answer yes[y]!"
+        exit 1
+    fi
+
+    echo ""
+}
+
+# This function is not used in standard product install script.
+# delete user and groups if not exists
+#
+del_user_group()
+{
+    /usr/sbin/userdel $OWNER_USER 2>/dev/null
+    /usr/sbin/groupdel $OWNER_GROUP 2>/dev/null
+}
+
+# This function is not used in standard product install script.
+# Uninstall OTP Server files
+#
+stop_services()
+{
+    echo "Stop OTP services..."
+
+    if [ $IS_ROOT -eq 0 ]
+    then
+        if [ -f $INIT_PATH/$OTPCHCKCONTROL_SCRIPT ]
+        then
+            $OTPCHCKCONTROL_PATH/$OTPCHCKCONTROL_SCRIPT stop
+        fi
+        
+        if [ -f $OTPTOMCAT_PATH/$OTPTOMCAT_SCRIPT ]
+        then
+            $OTPTOMCAT_PATH/$OTPTOMCAT_SCRIPT stop
+        fi
+
+        if [ -f $OTPSERVER_PATH/$OTPSERVER_SCRIPT ]
+        then
+            $OTPSERVER_PATH/$OTPSERVER_SCRIPT stop
+        fi
+
+        if [ -f $OTPMYSQL_PATH/$OTPMYSQL_SCRIPT ]
+        then
+            $OTPMYSQL_PATH/$OTPMYSQL_SCRIPT stop
+        fi
+    else
+        # stop OTPCHCKCONTROL_SCRIPT
+        if [ -f $INIT_PATH/$OTPCHCKCONTROL_SCRIPT ]
+        then
+            $INIT_PATH/$OTPCHCKCONTROL_SCRIPT stop
+        fi
+        # stop OTPTOMCAT_SCRIPT
+        if [ -f $INIT_PATH/$OTPTOMCAT_SCRIPT ]
+        then
+            $INIT_PATH/$OTPTOMCAT_SCRIPT stop
+        fi
+
+        # stop OTPSERVER_SCRIPT
+        if [ -f $INIT_PATH/$OTPSERVER_SCRIPT ]
+        then
+            $INIT_PATH/$OTPSERVER_SCRIPT stop
+        fi
+
+        # stop OTPMYSQL_SCRIPT
+        if [ -f $INIT_PATH/$OTPMYSQL_SCRIPT ]
+        then
+            $INIT_PATH/$OTPMYSQL_SCRIPT stop
+        fi
+    fi
+
+    if [ $? -eq 0 ]
+    then
+        echo "[OK]"
+    fi
+
+    echo ""
+}
+
+#
+# Uninstall OTP Server files
+#
+stop_services_one()
+{
+    echo "Stop OTP services..."
+
+    if [ -f $INIT_PATH/$OTPCHCKCONTROL_SCRIPT ]
+    then
+        $INIT_PATH/$OTPCHCKCONTROL_SCRIPT stop
+    else
+        if [ -f $OTPCHCKCONTROL_PATH/$OTPCHCKCONTROL_SCRIPT ]
+        then
+            $OTPCHCKCONTROL_PATH/$OTPCHCKCONTROL_SCRIPT stop
+        fi
+    fi
+
+    if [ $? -eq 0 ]
+    then
+        echo "[OK]"
+    fi
+
+    echo ""
+}
+
+#
+# get delete services command of OS
+#
+get_service_cmd()
+{
+    CHKCONFIG="/sbin/insserv"
+    DO_FORCE=-f
+    DEL_PARAM=--remove
+    if [ ! -x "$CHKCONFIG" ]
+    then
+        CHKCONFIG="/usr/lib/insserv/insserv"    #Ubuntu12.4_64-Bug
+        if [ ! -x "$CHKCONFIG" ]
+        then
+            CHKCONFIG=` whereis insserv 2>/dev/null | awk '{print $2}' 2>/dev/null `
+            if [ x"$CHKCONFIG" != x ]
+            then
+                return 3
+            fi
+        else
+            return 3
+        fi
+    else
+        return 3
+    fi
+
+    CHKCONFIG="/usr/sbin/update-rc.d"
+    DO_FORCE=-f
+    DEL_PARAM=remove
+    if [ ! -x "$CHKCONFIG" ]
+    then
+        CHKCONFIG=` whereis update-rc.d 2>/dev/null | awk '{print $2}' 2>/dev/null `
+        if [ x"$CHKCONFIG" != x ]
+        then
+            return 2
+        fi
+    else
+        return 2
+    fi
+
+    CHKCONFIG="/sbin/chkconfig"
+    DO_FORCE=
+    DEL_PARAM=--del
+    if [ ! -x "$CHKCONFIG" ]
+    then
+        CHKCONFIG=` whereis chkconfig 2>/dev/null | awk '{print $2}' 2>/dev/null `
+        if [ x"$CHKCONFIG" != x ]
+        then
+            return 1
+        fi
+    else
+        return 1
+    fi
+
+    echo "Sorry. It happened error when get service command. Not supported"
+    exit 1
+}
+
+#
+# delete OTP Server services to chkconfig list
+#
+del_services_cmd_one()
+{
+    echo "Delete OTP Server services to chkconfig list..."
+
+    get_service_cmd
+
+    # create scripts
+    if [ $IS_ROOT -eq 0 ]
+    then
+        ROOT_RUN_FILE="del_services.sh"
+        if [ -f $ROOT_RUN_FILE ]
+        then
+            rm -f $ROOT_RUN_FILE 2>/dev/null
+        fi
+        touch $ROOT_RUN_FILE
+        chmod a+x $ROOT_RUN_FILE
+        echo "# Please run this scripts by root." >>$ROOT_RUN_FILE
+        echo "# This script is used to delete otp services." >>$ROOT_RUN_FILE
+        echo "" >>$ROOT_RUN_FILE
+
+        if [ -f $INIT_PATH/$OTPCHCKCONTROL_SCRIPT ]
+        then
+            echo "$CHKCONFIG $DO_FORCE $OTPCHCKCONTROL_SCRIPT $DEL_PARAM 2>/dev/null" >>$ROOT_RUN_FILE
+            echo "rm -f $INIT_PATH/$OTPCHCKCONTROL_SCRIPT" >>$ROOT_RUN_FILE
+            echo "if [ \$? -eq 0 ]" >>$ROOT_RUN_FILE
+            echo "then" >>$ROOT_RUN_FILE
+            echo "    echo \"Delete $OTPCHCKCONTROL_SCRIPT service success.\"" >>$ROOT_RUN_FILE
+            echo "fi" >>$ROOT_RUN_FILE
+            echo "" >>$ROOT_RUN_FILE
+        fi
+
+        echo "echo \"Thank you for use OTP Server of Feitian Technologies Co., Ltd\"" >>$ROOT_RUN_FILE
+        echo "echo \"\"" >>$ROOT_RUN_FILE
+
+        echo "Please run $ROOT_RUN_FILE to delete otp services!"
+        echo ""
+        return
+    fi
+
+    # unlink service script
+    if [ -f $INIT_PATH/$OTPCHCKCONTROL_SCRIPT ]
+    then
+        $CHKCONFIG $DO_FORCE $OTPCHCKCONTROL_SCRIPT $DEL_PARAM 2>/dev/null
+        rm -f "$INIT_PATH/$OTPCHCKCONTROL_SCRIPT"
+    fi
+
+    if [ $? -eq 0 ]
+    then
+        echo "[OK]"
+    fi
+
+    echo ""
+}
+
+# This function is not used in standard product install script.
+# delete services for OS like redhat
+#
+del_services_redhat()
+{
+    # create scripts
+    if [ $IS_ROOT -eq 0 ]
+    then
+        ROOT_RUN_FILE="del_services.sh"
+        if [ -f $ROOT_RUN_FILE ]
+        then
+            rm -f $ROOT_RUN_FILE 2>/dev/null
+        fi
+        touch $ROOT_RUN_FILE
+        chmod a+x $ROOT_RUN_FILE
+        echo "# Please run this scripts by root." >>$ROOT_RUN_FILE
+        echo "# This script is used to delete otp services." >>$ROOT_RUN_FILE
+        echo "" >>$ROOT_RUN_FILE
+
+        if [ -f $INIT_PATH/$OTPCHCKCONTROL_SCRIPT ]
+        then
+            echo "$CHKCONFIG --del $OTPCHCKCONTROL_SCRIPT" >>$ROOT_RUN_FILE
+            echo "rm -f $INIT_PATH/$OTPCHCKCONTROL_SCRIPT" >>$ROOT_RUN_FILE
+            echo "if [ \$? -eq 0 ]" >>$ROOT_RUN_FILE
+            echo "then" >>$ROOT_RUN_FILE
+            echo "    echo \"Delete $OTPCHCKCONTROL_SCRIPT service success.\"" >>$ROOT_RUN_FILE
+            echo "fi" >>$ROOT_RUN_FILE
+            echo "" >>$ROOT_RUN_FILE
+        fi
+
+        if [ -f $INIT_PATH/$OTPTOMCAT_SCRIPT ]
+        then
+            echo "$CHKCONFIG --del $OTPTOMCAT_SCRIPT" >>$ROOT_RUN_FILE
+            echo "rm -f $INIT_PATH/$OTPTOMCAT_SCRIPT" >>$ROOT_RUN_FILE
+            echo "if [ \$? -eq 0 ]" >>$ROOT_RUN_FILE
+            echo "then" >>$ROOT_RUN_FILE
+            echo "    echo \"Delete $OTPTOMCAT_SCRIPT service success.\"" >>$ROOT_RUN_FILE
+            echo "fi" >>$ROOT_RUN_FILE
+            echo "" >>$ROOT_RUN_FILE
+        fi
+
+        if [ -f $INIT_PATH/$OTPSERVER_SCRIPT ]
+        then
+            echo "$CHKCONFIG --del $OTPSERVER_SCRIPT" >>$ROOT_RUN_FILE
+            echo "rm -f $INIT_PATH/$OTPSERVER_SCRIPT" >>$ROOT_RUN_FILE
+            echo "if [ \$? -eq 0 ]" >>$ROOT_RUN_FILE
+            echo "then" >>$ROOT_RUN_FILE
+            echo "    echo \"Delete $OTPSERVER_SCRIPT service success.\"" >>$ROOT_RUN_FILE
+            echo "fi" >>$ROOT_RUN_FILE
+            echo "" >>$ROOT_RUN_FILE
+        fi
+
+        if [ -f $INIT_PATH/$OTPMYSQL_SCRIPT ]
+        then
+            echo "$CHKCONFIG --del $OTPMYSQL_SCRIPT" >>$ROOT_RUN_FILE
+            echo "rm -f $INIT_PATH/$OTPMYSQL_SCRIPT" >>$ROOT_RUN_FILE
+            echo "if [ \$? -eq 0 ]" >>$ROOT_RUN_FILE
+            echo "then" >>$ROOT_RUN_FILE
+            echo "    echo \"Delete $OTPMYSQL_SCRIPT service success.\"" >>$ROOT_RUN_FILE
+            echo "fi" >>$ROOT_RUN_FILE
+            echo "" >>$ROOT_RUN_FILE
+        fi
+        echo "echo \"Thank you for use OTP Server of Feitian Technologies Co., Ltd\"" >>$ROOT_RUN_FILE
+        echo "echo \"\"" >>$ROOT_RUN_FILE
+
+        echo "Please run $ROOT_RUN_FILE to delete otp services!"
+        return
+    fi
+
+    # unlink service script
+    if [ -f $INIT_PATH/$OTPCHCKCONTROL_SCRIPT ]
+    then
+        $CHKCONFIG --del $OTPCHCKCONTROL_SCRIPT
+        rm -f "$INIT_PATH/$OTPCHCKCONTROL_SCRIPT"
+    fi
+
+    if [ -f $INIT_PATH/$OTPTOMCAT_SCRIPT ]
+    then
+        $CHKCONFIG --del $OTPTOMCAT_SCRIPT
+        rm -f "$INIT_PATH/$OTPTOMCAT_SCRIPT"
+    fi
+
+    if [ -f $INIT_PATH/$OTPSERVER_SCRIPT ]
+    then
+        $CHKCONFIG --del $OTPSERVER_SCRIPT
+        rm -f "$INIT_PATH/$OTPSERVER_SCRIPT"
+    fi
+
+    if [ -f $INIT_PATH/$OTPMYSQL_SCRIPT ]
+    then
+        $CHKCONFIG --del $OTPMYSQL_SCRIPT
+        rm -f "$INIT_PATH/$OTPMYSQL_SCRIPT"
+    fi
+}
+
+# This function is not used in standard product install script.
+# delete services for OS like ubuntu and debian
+#
+del_services_ubuntu_debian()
+{
+    # create scripts
+    if [ $IS_ROOT -eq 0 ]
+    then
+        ROOT_RUN_FILE="del_services.sh"
+        if [ -f $ROOT_RUN_FILE ]
+        then
+            rm -f $ROOT_RUN_FILE 2>/dev/null
+        fi
+        touch $ROOT_RUN_FILE
+        chmod a+x $ROOT_RUN_FILE
+        echo "# Please run this scripts by root." >>$ROOT_RUN_FILE
+        echo "# This script is used to delete otp services." >>$ROOT_RUN_FILE
+        echo "" >>$ROOT_RUN_FILE
+
+        if [ -f $INIT_PATH/$OTPCHCKCONTROL_SCRIPT ]
+        then
+            echo "$CHKCONFIG -f $OTPCHCKCONTROL_SCRIPT remove" >>$ROOT_RUN_FILE
+            echo "rm -f $INIT_PATH/$OTPCHCKCONTROL_SCRIPT" >>$ROOT_RUN_FILE
+            echo "if [ \$? -eq 0 ]" >>$ROOT_RUN_FILE
+            echo "then" >>$ROOT_RUN_FILE
+            echo "    echo \"Delete $OTPCHCKCONTROL_SCRIPT service success.\"" >>$ROOT_RUN_FILE
+            echo "fi" >>$ROOT_RUN_FILE
+            echo "" >>$ROOT_RUN_FILE
+        fi
+
+        if [ -f $INIT_PATH/$OTPTOMCAT_SCRIPT ]
+        then
+            echo "$CHKCONFIG -f $OTPTOMCAT_SCRIPT remove" >>$ROOT_RUN_FILE
+            echo "rm -f $INIT_PATH/$OTPTOMCAT_SCRIPT" >>$ROOT_RUN_FILE
+            echo "if [ \$? -eq 0 ]" >>$ROOT_RUN_FILE
+            echo "then" >>$ROOT_RUN_FILE
+            echo "    echo \"Delete $OTPTOMCAT_SCRIPT service success.\"" >>$ROOT_RUN_FILE
+            echo "fi" >>$ROOT_RUN_FILE
+            echo "" >>$ROOT_RUN_FILE
+        fi
+
+        if [ -f $INIT_PATH/$OTPSERVER_SCRIPT ]
+        then
+            echo "$CHKCONFIG -f $OTPSERVER_SCRIPT remove" >>$ROOT_RUN_FILE
+            echo "rm -f $INIT_PATH/$OTPSERVER_SCRIPT" >>$ROOT_RUN_FILE
+            echo "if [ \$? -eq 0 ]" >>$ROOT_RUN_FILE
+            echo "then" >>$ROOT_RUN_FILE
+            echo "    echo \"Delete $OTPSERVER_SCRIPT service success.\"" >>$ROOT_RUN_FILE
+            echo "fi" >>$ROOT_RUN_FILE
+            echo "" >>$ROOT_RUN_FILE
+        fi
+
+        if [ -f $INIT_PATH/$OTPMYSQL_SCRIPT ]
+        then
+            echo "$CHKCONFIG -f $OTPMYSQL_SCRIPT remove" >>$ROOT_RUN_FILE
+            echo "rm -f $INIT_PATH/$OTPMYSQL_SCRIPT" >>$ROOT_RUN_FILE
+            echo "if [ \$? -eq 0 ]" >>$ROOT_RUN_FILE
+            echo "then" >>$ROOT_RUN_FILE
+            echo "    echo \"Delete $OTPMYSQL_SCRIPT service success.\"" >>$ROOT_RUN_FILE
+            echo "fi" >>$ROOT_RUN_FILE
+            echo "" >>$ROOT_RUN_FILE
+        fi
+        echo "echo \"Thank you for use OTP Server of Feitian Technologies Co., Ltd\"" >>$ROOT_RUN_FILE
+        echo "echo \"\"" >>$ROOT_RUN_FILE
+
+        echo "Please run $ROOT_RUN_FILE to delete otp services!"
+        return
+    fi
+
+    # unlink service script
+    if [ -f $INIT_PATH/$OTPCHCKCONTROL_SCRIPT ]
+    then
+        $CHKCONFIG -f $OTPCHCKCONTROL_SCRIPT remove
+        rm -f "$INIT_PATH/$OTPCHCKCONTROL_SCRIPT"
+    fi
+
+    if [ -f $INIT_PATH/$OTPTOMCAT_SCRIPT ]
+    then
+        $CHKCONFIG -f $OTPTOMCAT_SCRIPT remove
+        rm -f "$INIT_PATH/$OTPTOMCAT_SCRIPT"
+    fi
+
+    if [ -f $INIT_PATH/$OTPSERVER_SCRIPT ]
+    then
+        $CHKCONFIG -f $OTPSERVER_SCRIPT remove
+        rm -f "$INIT_PATH/$OTPSERVER_SCRIPT"
+    fi
+
+    if [ -f $INIT_PATH/$OTPMYSQL_SCRIPT ]
+    then
+        $CHKCONFIG -f $OTPMYSQL_SCRIPT remove
+        rm -f "$INIT_PATH/$OTPMYSQL_SCRIPT"
+    fi
+}
+
+# This function is not used in standard product install script.
+# delete OTP Server services to chkconfig list
+#
+del_services_os()
+{
+    echo "Delete OTP Server services to chkconfig list..."
+    get_service_cmd
+    CMD_TYPE=$?
+    case $CMD_TYPE in
+    1)
+        del_services_redhat
+        ;;
+    2)
+        del_services_ubuntu_debian
+        ;;
+    *)
+        echo "Error, not support!"
+        exit 1
+        ;;
+    esac
+
+    if [ $? -eq 0 ]
+    then
+        echo "[OK]"
+    fi
+
+    echo ""
+}
+
+# This function is not used in standard product install script.
+# delete OTP Server services to chkconfig list
+#
+del_services_cmd()
+{
+    echo "Delete OTP Server services to chkconfig list..."
+
+    get_service_cmd
+
+    # create scripts
+    if [ $IS_ROOT -eq 0 ]
+    then
+        ROOT_RUN_FILE="del_services.sh"
+        if [ -f $ROOT_RUN_FILE ]
+        then
+            rm -f $ROOT_RUN_FILE 2>/dev/null
+        fi
+        touch $ROOT_RUN_FILE
+        chmod a+x $ROOT_RUN_FILE
+        echo "# Please run this scripts by root." >>$ROOT_RUN_FILE
+        echo "# This script is used to delete otp services." >>$ROOT_RUN_FILE
+        echo "" >>$ROOT_RUN_FILE
+
+        if [ -f $INIT_PATH/$OTPCHCKCONTROL_SCRIPT ]
+        then
+            echo "$CHKCONFIG $DO_FORCE $OTPCHCKCONTROL_SCRIPT $DEL_PARAM 2>/dev/null" >>$ROOT_RUN_FILE
+            echo "rm -f $INIT_PATH/$OTPCHCKCONTROL_SCRIPT" >>$ROOT_RUN_FILE
+            echo "if [ \$? -eq 0 ]" >>$ROOT_RUN_FILE
+            echo "then" >>$ROOT_RUN_FILE
+            echo "    echo \"Delete $OTPCHCKCONTROL_SCRIPT service success.\"" >>$ROOT_RUN_FILE
+            echo "fi" >>$ROOT_RUN_FILE
+            echo "" >>$ROOT_RUN_FILE
+        fi
+
+        if [ -f $INIT_PATH/$OTPTOMCAT_SCRIPT ]
+        then
+            echo "$CHKCONFIG $DO_FORCE $OTPTOMCAT_SCRIPT $DEL_PARAM 2>/dev/null" >>$ROOT_RUN_FILE
+            echo "rm -f $INIT_PATH/$OTPTOMCAT_SCRIPT" >>$ROOT_RUN_FILE
+            echo "if [ \$? -eq 0 ]" >>$ROOT_RUN_FILE
+            echo "then" >>$ROOT_RUN_FILE
+            echo "    echo \"Delete $OTPTOMCAT_SCRIPT service success.\"" >>$ROOT_RUN_FILE
+            echo "fi" >>$ROOT_RUN_FILE
+            echo "" >>$ROOT_RUN_FILE
+        fi
+
+        if [ -f $INIT_PATH/$OTPSERVER_SCRIPT ]
+        then
+            echo "$CHKCONFIG $DO_FORCE $OTPSERVER_SCRIPT $DEL_PARAM 2>/dev/null" >>$ROOT_RUN_FILE
+            echo "rm -f $INIT_PATH/$OTPSERVER_SCRIPT" >>$ROOT_RUN_FILE
+            echo "if [ \$? -eq 0 ]" >>$ROOT_RUN_FILE
+            echo "then" >>$ROOT_RUN_FILE
+            echo "    echo \"Delete $OTPSERVER_SCRIPT service success.\"" >>$ROOT_RUN_FILE
+            echo "fi" >>$ROOT_RUN_FILE
+            echo "" >>$ROOT_RUN_FILE
+        fi
+
+        if [ -f $INIT_PATH/$OTPMYSQL_SCRIPT ]
+        then
+            echo "$CHKCONFIG $DO_FORCE $OTPMYSQL_SCRIPT $DEL_PARAM 2>/dev/null" >>$ROOT_RUN_FILE
+            echo "rm -f $INIT_PATH/$OTPMYSQL_SCRIPT" >>$ROOT_RUN_FILE
+            echo "if [ \$? -eq 0 ]" >>$ROOT_RUN_FILE
+            echo "then" >>$ROOT_RUN_FILE
+            echo "    echo \"Delete $OTPMYSQL_SCRIPT service success.\"" >>$ROOT_RUN_FILE
+            echo "fi" >>$ROOT_RUN_FILE
+            echo "" >>$ROOT_RUN_FILE
+        fi
+        echo "echo \"Thank you for use OTP Server of Feitian Technologies Co., Ltd\"" >>$ROOT_RUN_FILE
+        echo "echo \"\"" >>$ROOT_RUN_FILE
+
+        echo "Please run $ROOT_RUN_FILE to delete otp services!"
+        echo ""
+        return
+    fi
+
+    # unlink service script
+    if [ -f $INIT_PATH/$OTPCHCKCONTROL_SCRIPT ]
+    then
+        $CHKCONFIG $DO_FORCE $OTPCHCKCONTROL_SCRIPT $DEL_PARAM 2>/dev/null
+        rm -f "$INIT_PATH/$OTPCHCKCONTROL_SCRIPT"
+    fi
+
+    if [ -f $INIT_PATH/$OTPTOMCAT_SCRIPT ]
+    then
+        $CHKCONFIG $DO_FORCE $OTPTOMCAT_SCRIPT $DEL_PARAM 2>/dev/null
+        rm -f "$INIT_PATH/$OTPTOMCAT_SCRIPT"
+    fi
+
+    if [ -f $INIT_PATH/$OTPSERVER_SCRIPT ]
+    then
+        $CHKCONFIG $DO_FORCE $OTPSERVER_SCRIPT $DEL_PARAM 2>/dev/null
+        rm -f "$INIT_PATH/$OTPSERVER_SCRIPT"
+    fi
+
+    if [ -f $INIT_PATH/$OTPMYSQL_SCRIPT ]
+    then
+        $CHKCONFIG $DO_FORCE $OTPMYSQL_SCRIPT $DEL_PARAM 2>/dev/null
+        rm -f "$INIT_PATH/$OTPMYSQL_SCRIPT"
+    fi
+
+    if [ $? -eq 0 ]
+    then
+        echo "[OK]"
+    fi
+
+    echo ""
+}
+
+# This function is not used in standard product install script.
+# delete service used variables
+#
+del_service_vars()
+{
+    if [ -d /etc/rc3.d -o -d /etc/rc0.d ]
+    then
+        ETC_RC_2_D="/etc/rc2.d"
+        ETC_RC_3_D="/etc/rc3.d"
+        ETC_RC_4_D="/etc/rc4.d"
+        ETC_RC_5_D="/etc/rc5.d"
+   elif [ -d /etc/init.d/rc3.d -o -d /etc/init.d/rc0.d ]
+   then
+        ETC_RC_2_D="/etc/init.d/rc2.d"
+        ETC_RC_3_D="/etc/init.d/rc3.d"
+        ETC_RC_4_D="/etc/init.d/rc4.d"
+        ETC_RC_5_D="/etc/init.d/rc5.d"
+    else
+        echo "Sorry. It happened error when delete services. Not supported"
+        exit 1
+    fi
+
+    SRART="S"
+    STOP="K"
+}
+
+# This function is not used in standard product install script.
+# delete service execute by root
+# $1 script name; $2 start order; $3 stop order;
+del_service_exec()
+{
+    local SCRIPT_START="${SRART}$2$1"
+    local SCRIPT_STOP="${STOP}$3$1"
+
+    rm -f ${ETC_RC_2_D}/$SCRIPT_START 2>/dev/null
+    rm -f ${ETC_RC_3_D}/$SCRIPT_START 2>/dev/null
+    rm -f ${ETC_RC_4_D}/$SCRIPT_START 2>/dev/null
+    rm -f ${ETC_RC_5_D}/$SCRIPT_START 2>/dev/null
+
+    rm -f ${ETC_RC_2_D}/$SCRIPT_STOP 2>/dev/null
+    rm -f ${ETC_RC_3_D}/$SCRIPT_STOP 2>/dev/null
+    rm -f ${ETC_RC_4_D}/$SCRIPT_STOP 2>/dev/null
+    rm -f ${ETC_RC_5_D}/$SCRIPT_STOP 2>/dev/null
+}
+
+# This function is not used in standard product install script.
+# delete service commands output
+# $1 script name; $2 start order; $3 stop order; $4 output file;
+del_service_output()
+{
+    local SCRIPT_START="${SRART}$2$1"
+    local SCRIPT_STOP="${STOP}$3$1"
+
+    echo "rm -f ${ETC_RC_2_D}/$SCRIPT_START 2>/dev/null" >> $4
+    echo "rm -f ${ETC_RC_3_D}/$SCRIPT_START 2>/dev/null" >> $4
+    echo "rm -f ${ETC_RC_4_D}/$SCRIPT_START 2>/dev/null" >> $4
+    echo "rm -f ${ETC_RC_5_D}/$SCRIPT_START 2>/dev/null" >> $4
+
+    echo "rm -f ${ETC_RC_2_D}/$SCRIPT_STOP 2>/dev/null" >> $4
+    echo "rm -f ${ETC_RC_3_D}/$SCRIPT_STOP 2>/dev/null" >> $4
+    echo "rm -f ${ETC_RC_4_D}/$SCRIPT_STOP 2>/dev/null" >> $4
+    echo "rm -f ${ETC_RC_5_D}/$SCRIPT_STOP 2>/dev/null" >> $4
+}
+
+# This function is not used in standard product install script.
+# Delete OTP Server services to chkconfig list
+#
+del_services_new()
+{
+    echo "Delete OTP Server services to chkconfig list..."
+
+    del_service_vars
+
+    if [ $IS_ROOT -eq 0 ]
+    then
+        ROOT_RUN_FILE="del_services.sh"
+        if [ -f $ROOT_RUN_FILE ]
+        then
+            rm -f $ROOT_RUN_FILE 2>/dev/null
+        fi
+        touch $ROOT_RUN_FILE
+        chmod a+x $ROOT_RUN_FILE
+        # some description of scripts
+        echo "# Please run this scripts by root." >>$ROOT_RUN_FILE
+        echo "# This script is used to delete otp services." >>$ROOT_RUN_FILE
+        echo "" >>$ROOT_RUN_FILE
+
+        if [ -f $INIT_PATH/$OTPCHCKCONTROL_SCRIPT ]
+        then
+            OTPCHCKCONTROL_ORDER_START=90
+            OTPCHCKCONTROL_ORDER_STOP=10
+            del_service_output "$OTPCHCKCONTROL_SCRIPT" "$OTPCHCKCONTROL_ORDER_START" "$OTPCHCKCONTROL_ORDER_STOP" "$ROOT_RUN_FILE"
+            echo "rm -f $INIT_PATH/$OTPCHCKCONTROL_SCRIPT" >>$ROOT_RUN_FILE
+            echo "if [ \$? -eq 0 ]" >>$ROOT_RUN_FILE
+            echo "then" >>$ROOT_RUN_FILE
+            echo "    echo \"Delete $OTPCHCKCONTROL_SCRIPT service success.\"" >>$ROOT_RUN_FILE
+            echo "fi" >>$ROOT_RUN_FILE
+            echo "" >>$ROOT_RUN_FILE
+        fi
+
+        if [ -f $INIT_PATH/$OTPTOMCAT_SCRIPT ]
+        then
+            OTPTOMCAT_ORDER_START=89
+            OTPTOMCAT_ORDER_STOP=11
+            del_service_output "$OTPTOMCAT_SCRIPT" "$OTPTOMCAT_ORDER_START" "$OTPTOMCAT_ORDER_STOP" "$ROOT_RUN_FILE"
+            echo "rm -f $INIT_PATH/$OTPTOMCAT_SCRIPT" >>$ROOT_RUN_FILE
+            echo "if [ \$? -eq 0 ]" >>$ROOT_RUN_FILE
+            echo "then" >>$ROOT_RUN_FILE
+            echo "    echo \"Delete $OTPTOMCAT_SCRIPT service success.\"" >>$ROOT_RUN_FILE
+            echo "fi" >>$ROOT_RUN_FILE
+            echo "" >>$ROOT_RUN_FILE
+        fi
+
+        if [ -f $INIT_PATH/$OTPSERVER_SCRIPT ]
+        then
+            OTPSERVER_ORDER_START=88
+            OTPSERVER_ORDER_STOP=12
+            del_service_output "$OTPSERVER_SCRIPT" "$OTPSERVER_ORDER_START" "$OTPSERVER_ORDER_STOP" "$ROOT_RUN_FILE"
+            echo "rm -f $INIT_PATH/$OTPSERVER_SCRIPT" >>$ROOT_RUN_FILE
+            echo "if [ \$? -eq 0 ]" >>$ROOT_RUN_FILE
+            echo "then" >>$ROOT_RUN_FILE
+            echo "    echo \"Delete $OTPSERVER_SCRIPT service success.\"" >>$ROOT_RUN_FILE
+            echo "fi" >>$ROOT_RUN_FILE
+            echo "" >>$ROOT_RUN_FILE
+        fi
+
+        if [ -f $INIT_PATH/$OTPMYSQL_SCRIPT ]
+        then
+            OTPMYSQL_ORDER_START=62
+            OTPMYSQL_ORDER_STOP=38
+            del_service_output "$OTPMYSQL_SCRIPT" "$OTPMYSQL_ORDER_START" "$OTPMYSQL_ORDER_STOP" "$ROOT_RUN_FILE"
+            echo "rm -f $INIT_PATH/$OTPMYSQL_SCRIPT" >>$ROOT_RUN_FILE
+            echo "if [ \$? -eq 0 ]" >>$ROOT_RUN_FILE
+            echo "then" >>$ROOT_RUN_FILE
+            echo "    echo \"Delete $OTPMYSQL_SCRIPT service success.\"" >>$ROOT_RUN_FILE
+            echo "fi" >>$ROOT_RUN_FILE
+            echo "" >>$ROOT_RUN_FILE
+        fi
+        echo "echo \"Thank you for use OTP Server of Feitian Technologies Co., Ltd\"" >>$ROOT_RUN_FILE
+        echo "echo \"\"" >>$ROOT_RUN_FILE
+
+        echo "Please run $ROOT_RUN_FILE to delete otp services!"
+        echo ""
+        return
+    fi
+
+    # unlink service script
+    if [ -f $INIT_PATH/$OTPCHCKCONTROL_SCRIPT ]
+    then
+        OTPCHCKCONTROL_ORDER_START=90
+        OTPCHCKCONTROL_ORDER_STOP=10
+        del_service_exec "$OTPCHCKCONTROL_SCRIPT" "$OTPCHCKCONTROL_ORDER_START" "$OTPCHCKCONTROL_ORDER_STOP"
+        rm -f "$INIT_PATH/$OTPCHCKCONTROL_SCRIPT"
+    fi
+
+    if [ -f $INIT_PATH/$OTPTOMCAT_SCRIPT ]
+    then
+        OTPTOMCAT_ORDER_START=89
+        OTPTOMCAT_ORDER_STOP=11
+        del_service_exec "$OTPTOMCAT_SCRIPT" "$OTPTOMCAT_ORDER_START" "$OTPTOMCAT_ORDER_STOP"
+        rm -f "$INIT_PATH/$OTPTOMCAT_SCRIPT"
+    fi
+
+    if [ -f $INIT_PATH/$OTPSERVER_SCRIPT ]
+    then
+        OTPSERVER_ORDER_START=88
+        OTPSERVER_ORDER_STOP=12
+        del_service_exec "$OTPSERVER_SCRIPT" "$OTPSERVER_ORDER_START" "$OTPSERVER_ORDER_STOP"
+        rm -f "$INIT_PATH/$OTPSERVER_SCRIPT"
+    fi
+
+    if [ -f $INIT_PATH/$OTPMYSQL_SCRIPT ]
+    then
+        OTPMYSQL_ORDER_START=62
+        OTPMYSQL_ORDER_STOP=38
+        del_service_exec "$OTPMYSQL_SCRIPT" "$OTPMYSQL_ORDER_START" "$OTPMYSQL_ORDER_STOP"
+        rm -f "$INIT_PATH/$OTPMYSQL_SCRIPT"
+    fi
+
+    if [ $? -eq 0 ]
+    then
+        echo "[OK]"
+    fi
+
+    echo ""
+}
+
+# This function is not used in standard product install script.
+# backuo some config files of OTP Server services
+#
+backup_confs()
+{
+    echo -n  "Will you backup config files? (Y/N) [Y]: " 
+    read $READ_E resp
+    resp=`echo "x$resp" | tr '[A-Z]' '[a-z]'`
+    if [ $resp = "xn" ]
+    then
+        return 0
+    fi
+
+    echo -n  "Please input the backup path ["$BASE_PATH"_bak]: " 
+    read $READ_E BACKUP_PATH
+    if [ x"$BACKUP_PATH" = x ]
+    then
+        BACKUP_PATH="$BASE_PATH""_bak"
+    fi
+
+    OTPSERVER_PATH_BAK="$BACKUP_PATH/OTPAuthServer"
+    OTPCENTER_PATH_BAK="$BACKUP_PATH/otpcenter"
+    USERPORTAL_PATH_BAK="$BACKUP_PATH/otpportal"
+    OTPMYSQL_PATH_BAK="$BACKUP_PATH/mysql"
+    
+    # back up old files
+    backup_conf() {
+      if [ -e "$1/$2" ]
+      then
+        mkdir -p "$3"
+        mv "$1/$2" "$3/$2.bak"
+      fi
+    }
+
+    backup_conf $OTPSERVER_PATH/etc otpserv.conf    $OTPSERVER_PATH_BAK
+    backup_conf $OTPSERVER_PATH/etc otpradserv.conf $OTPSERVER_PATH_BAK
+    backup_conf $OTPSERVER_PATH/etc otpcore.ini     $OTPSERVER_PATH_BAK
+    backup_conf $OTPSERVER_PATH/etc otpmodule.conf  $OTPSERVER_PATH_BAK
+    backup_conf $OTPSERVER_PATH/etc otpdict.conf    $OTPSERVER_PATH_BAK
+    backup_conf $OTPSERVER_PATH/etc otpeap.conf     $OTPSERVER_PATH_BAK
+
+    echo "The path of config files is $BACKUP_PATH"
+    echo ""
+}
+
+#
+# Uninstall OTP Server files
+#
+remove_otpserver_files()
+{
+    echo "Uninstalling OTP Server files..."
+
+    # clean up old files
+    #rm -rf $BASE_PATH
+
+    # delete OTPCHCKCONTROL_SCRIPT CHECKSERVICES_SCRIPT
+    rm -f $OTPCHCKCONTROL_PATH/$OTPCHCKCONTROL_SCRIPT >/dev/null
+    rm -f $OTPCHCKCONTROL_PATH/$OTPCHCKCONTROL_LOGFILE >/dev/null
+    rm -f $OTPCHCKCONTROL_PATH/$CHECKSERVICES_SCRIPT >/dev/null
+    rm -f $OTPCHCKCONTROL_PATH/$CHECKSERVICES_LOGFILE >/dev/null
+
+    # delete OTPTOMCAT_PATH
+    if [ -d $OTPTOMCAT_PATH ]
+    then
+        rm -rf $OTPTOMCAT_PATH
+    fi
+
+    # delete OTPSERVER_PATH
+    if [ -d $OTPSERVER_PATH ]
+    then
+        rm -rf $OTPSERVER_PATH
+    fi
+
+    # delete JDK_PATH
+    if [ -d $JDK_PATH ]
+    then
+        rm -rf $JDK_PATH
+    fi
+
+    # delete OTPMYSQL_PATH
+    if [ -d $OTPMYSQL_PATH ]
+    then
+        mv $OTPMYSQL_PATH/data $BASE_PATH/
+        rm -rf $OTPMYSQL_PATH/*
+        mv $BASE_PATH/data $OTPMYSQL_PATH/
+        echo "The directory $OTPMYSQL_PATH/data is remain."
+    fi
+
+    # delete UNINSTALL_SCRIPT
+    rm -f $UNSTALL_PATH/$UNINSTALL_SCRIPT >/dev/null
+
+    if [ $? -eq 0 ]
+    then
+        echo "[ok]"
+        echo ""
+    fi
+}
+
+#
+# print thanks of user choose
+#
+thanks()
+{
+    echo "The OTP Server v4.0.0 has been uninstalled from '$BASE_PATH'."
+    echo "Thank you for use OTP Server of Feitian Technologies Co., Ltd"
+    echo ""
+}
+
+#
+# uninstall as call functions above
+#
+unintsall_otp_server_ststem()
+{
+    check_read_e
+
+    #check_user             #not chek
+    deal_params $*
+    check_license
+
+    set_path
+    #del_user_group         #not del
+
+    stop_services_one
+    del_services_cmd_one
+
+    #backup_confs           #bak as not del
+    remove_otpserver_files
+
+    thanks
+}
+
+unintsall_otp_server_ststem $*
