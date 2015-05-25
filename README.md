@@ -4,5 +4,5 @@ This script includes:
   OTPAuthService
   OTPCenter
   OTPPortal
-  MyAql
+  MySql
   Jdk
